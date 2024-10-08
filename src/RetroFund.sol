@@ -15,6 +15,9 @@ contract RetroFund {
         string finalImageHash; // IPFS hash for final image
         uint256 votesInFavor;
         uint256 votesAgainst;
+        uint256 completionVotesInFavor;
+        uint256 completionVotesAgainst;
+        bool completionApproved;
     }
 
     Proposal[] public proposals;
@@ -25,6 +28,8 @@ contract RetroFund {
     event ProposalVoted(uint256 proposalId, address voter, bool inFavor);
     event ProposalCompleted(uint256 proposalId, string finalImageHash);
     event FundsReleased(uint256 proposalId, address proposer, uint256 amount);
+    event CompletionVoted(uint256 proposalId, address voter, bool inFavor);
+    event CompletionApproved(uint256 proposalId);
 
     modifier onlyTrustedCommittee() {
         require(trustedCommittee[msg.sender], "Not part of trusted committee");
@@ -56,7 +61,10 @@ contract RetroFund {
             fundsReleased: false,
             finalImageHash: "",
             votesInFavor: 0,
-            votesAgainst: 0
+            votesAgainst: 0,
+            completionVotesInFavor: 0,
+            completionVotesAgainst: 0,
+            completionApproved: false
         }));
         
         emit ProposalSubmitted(proposals.length - 1, msg.sender, _requestedAmount, _startImageHash);
@@ -75,8 +83,10 @@ contract RetroFund {
             proposal.votesAgainst++;
         }
 
-        // If majority votes in favor, approve the proposal
-        if (proposal.votesInFavor > proposal.votesAgainst // && total votes are greater than some number) {
+        // If majority votes in favor and total votes exceed threshold, approve the proposal
+        uint256 totalVotes = proposal.votesInFavor + proposal.votesAgainst;
+        uint256 voteThreshold = 5; // Example threshold, adjust as needed
+        if (proposal.votesInFavor > proposal.votesAgainst && totalVotes > voteThreshold) {
             proposal.approved = true;
         }
 
@@ -104,19 +114,40 @@ contract RetroFund {
         emit ProposalCompleted(_proposalId, _finalImageHash);
     }
 
-    // Releases the funds to a project proposer after their proposal has been approved and completed 
-    function releaseFunds(uint256 _proposalId) external onlyTrustedCommittee {
+    function voteOnCompletion(uint256 _proposalId, bool _inFavor) external onlyTrustedCommittee {
         // retrieves the proposal from the proposals array using the provided _proposalId
         Proposal storage proposal = proposals[_proposalId];
-        // checks that the project has been completed
+        // ensures that the project has been marked as completed
+        require(proposal.completed, "Project must be marked as completed first");
+        // ensures that the completion has not already been approved
+        require(!proposal.completionApproved, "Completion already approved");
+
+        // increments the appropriate vote counter based on the _inFavor parameter
+        if (_inFavor) {
+            proposal.completionVotesInFavor++;
+        } else {
+            proposal.completionVotesAgainst++;
+        }
+
+        // If majority votes in favor, approve the completion
+        if (proposal.completionVotesInFavor > proposal.completionVotesAgainst) {
+            proposal.completionApproved = true;
+            emit CompletionApproved(_proposalId);
+        }
+
+        emit CompletionVoted(_proposalId, msg.sender, _inFavor);
+    }
+
+    // Releases the funds to a project proposer after their proposal has been approved and completed 
+    function releaseFunds(uint256 _proposalId) external onlyTrustedCommittee {
+        Proposal storage proposal = proposals[_proposalId];
         require(proposal.completed, "Project must be completed");
-        // checks that the funds have not already been released
         require(!proposal.fundsReleased, "Funds already released");
-        // marks funds as released to prevent double-spending 
-        proposal.fundsReleased = true;
+        require(proposal.completionApproved, "Completion must be approved");
         
+        proposal.fundsReleased = true;
+
         // Execute fund release via Gnosis Safe
-        // sends the requested amount of ETH to the project proposer's address
         GnosisSafe(gnosisSafe).execTransactionFromModule(
             proposal.proposer,
             proposal.requestedAmount,

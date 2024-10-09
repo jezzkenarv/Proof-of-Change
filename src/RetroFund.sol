@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol"; // OpenZeppelin Ownable for admin roles
-import "@gnosis.pm/safe-contracts/contracts/GnosisSafe.sol"; // Importing Gnosis Safe for multisig management
+import "safe-smart-account/contracts/Safe.sol"; // 
 
 contract RetroFund {
     struct Proposal {
@@ -147,13 +147,14 @@ contract RetroFund {
         
         proposal.fundsReleased = true;
 
-        // Execute fund release via Gnosis Safe
-        GnosisSafe(gnosisSafe).execTransactionFromModule(
+        // Execute fund release via Safe
+        bool success = Safe(payable(gnosisSafe)).execTransactionFromModule(
             proposal.proposer,
             proposal.requestedAmount,
             "",  // indicates no additional data is sent with the transaction 
-            GnosisSafe.Operation.Call
+            Enum.Operation.Call
         );
+        require(success, "Fund release transaction failed");
 
         emit FundsReleased(_proposalId, proposal.proposer, proposal.requestedAmount);
     }

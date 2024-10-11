@@ -13,7 +13,7 @@ Proof of Change represents a significant leap forward in connecting blockchain t
 2. The DAO reviews the proposals, examining both the images and their corresponding hashes to ensure they match the project descriptions and are valid.
 3. DAO members vote on whether to accept the proposals based on this comprehensive review.
 4. Upon completion, project proposers submit a final image of the project area and its corresponding hash on IPFS.
-5. A trusted committee verifies the changes using the MACI system 
+5. A trusted committee verifies the changes and votes on the completion using the MACI system 
 6. The funds are released to the project proposers
 
 #### Trustless Verification of Project Completion:

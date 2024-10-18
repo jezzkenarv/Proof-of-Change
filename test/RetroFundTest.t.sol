@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.18;
 
 import "forge-std/Test.sol";
 import "../src/RetroFund.sol";
@@ -23,6 +23,16 @@ contract RetroFundTest is Test {
 
         retroFund = new RetroFund(address(gnosisSafe), committeeMembers);
         proposer = address(0x3);
+        
+        _setupGnosisSafeMock();
+    }
+
+    function _setupGnosisSafeMock() internal {
+        vm.mockCall(
+            address(gnosisSafe),
+            abi.encodeWithSelector(ModuleManager.execTransactionFromModule.selector),
+            abi.encode(true)
+        );
     }
 
     function testSubmitProposal() public {
@@ -71,20 +81,12 @@ contract RetroFundTest is Test {
     }
 
     function testReleaseFunds() public {
-        vm.mockCall(
-            address(gnosisSafe),
-            abi.encodeWithSelector(ModuleManager.execTransactionFromModule.selector),
-            abi.encode(true)
-        );
-
         _submitApproveAndCompleteProposal();
         _approveCompletion();
 
         retroFund.releaseFunds(0);
 
-        (, , , , , bool fundsReleased, , , , , , ) = retroFund.proposals(0);
-        
-        assertTrue(fundsReleased);
+        _checkFundsReleased(0);
     }
 
     function _submitProposal() internal {
@@ -114,5 +116,10 @@ contract RetroFundTest is Test {
             vm.prank(committeeMembers[i]);
             retroFund.voteOnCompletion(0, true);
         }
+    }
+
+    function _checkFundsReleased(uint256 proposalId) internal {
+        (, , , , , bool fundsReleased, , , , , , ) = retroFund.proposals(proposalId);
+        assertTrue(fundsReleased);
     }
 }

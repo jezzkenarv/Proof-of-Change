@@ -2,9 +2,9 @@
 pragma solidity ^0.8.18;
 
 import "@openzeppelin/contracts/access/Ownable.sol"; // OpenZeppelin Ownable for admin roles
-import "safe-smart-account/contracts/Safe.sol"; // 
+import "@aragon/os/contracts/apps/AragonApp.sol"; // Import Aragon DAO contract
 
-contract RetroFund {
+contract RetroFund is AragonApp {
     struct Proposal {
         address payable proposer;
         string startImageHash; // IPFS hash for starting image (commitment)
@@ -21,7 +21,7 @@ contract RetroFund {
     }
 
     Proposal[] public proposals;
-    address public gnosisSafe; // Gnosis Safe multisig wallet address
+    address public aragonDao; // Aragon DAO address instead of Gnosis Safe
     mapping(address => bool) public trustedCommittee; // Multisig committee members
 
     event ProposalSubmitted(uint256 proposalId, address proposer, uint256 amount, string startImageHash);
@@ -31,17 +31,10 @@ contract RetroFund {
     event CompletionVoted(uint256 proposalId, address voter, bool inFavor);
     event CompletionApproved(uint256 proposalId);
 
-    modifier onlyTrustedCommittee() {
-        require(trustedCommittee[msg.sender], "Not part of trusted committee");
-        _;
-    }
+    bytes32 public constant TRUSTED_COMMITTEE_ROLE = keccak256("TRUSTED_COMMITTEE_ROLE");
 
-    constructor(address _gnosisSafe, address[] memory _committeeMembers) {
-        gnosisSafe = _gnosisSafe;
-        // iterates through an array of addresses of committee members and for each address it sets a value in the trustedCommittee mapping with boolean values to true
-        for (uint256 i = 0; i < _committeeMembers.length; i++) {
-            trustedCommittee[_committeeMembers[i]] = true;
-        }
+    constructor(address _aragonDao) {
+        aragonDao = _aragonDao;
     }
 
     // allows users to submit new proposals to the system, which can then be voted on, completed, and potentially funded    
@@ -147,12 +140,13 @@ contract RetroFund {
         
         proposal.fundsReleased = true;
 
-        // Execute fund release via Safe
-        bool success = Safe(payable(gnosisSafe)).execTransactionFromModule(
-            proposal.proposer,
-            proposal.requestedAmount,
-            "",  // indicates no additional data is sent with the transaction 
-            Enum.Operation.Call
+        // Execute fund release via Aragon DAO
+        bool success = aragonDao.call(
+            abi.encodeWithSignature(
+                "transferFunds(address,uint256)",
+                proposal.proposer,
+                proposal.requestedAmount
+            )
         );
         require(success, "Fund release transaction failed");
 

@@ -12,3 +12,12 @@ docs/
 
 # Dotenv file
 .env
+
+# OS files
+.DS_Store
+
+# Ignore node_modules except for @aragon/osx
+node_modules
+!node_modules/@aragon
+!node_modules/@aragon/osx
+!node_modules/@aragon/osx/**

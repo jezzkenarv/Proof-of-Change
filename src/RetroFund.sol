@@ -2,64 +2,12 @@
 pragma solidity ^0.8.18;
 
 import "@openzeppelin/contracts/access/Ownable.sol"; // OpenZeppelin Ownable for admin roles
-import "safe-smart-account/contracts/Safe.sol"; // 
+import "safe-smart-account/contracts/Safe.sol"; // Gnosis Safe
+import "./IRetroFund.sol";
 
-contract RetroFund {
+contract RetroFund is IRetroFund {
     uint256 constant public COOLDOWN_PERIOD = 72 hours;
     
-    // Define structs separately
-    struct ImageData {
-        string startImageHash;
-        string finalImageHash;
-    }
-
-    struct InitialVoting {
-        bool approved;
-        uint256 votesInFavor;
-        uint256 votesAgainst;
-    }
-
-    struct MainDAOData {
-        bool approved;
-        uint256 votesInFavor;
-        uint256 votesAgainst;
-        bool completionApproved;
-        uint256 completionVotesInFavor;
-        uint256 completionVotesAgainst;
-    }
-
-    struct SubDAOData {
-        bool approved;
-        uint256 votesInFavor;
-        uint256 votesAgainst;
-        bool completionApproved;
-        uint256 completionVotesInFavor;
-        uint256 completionVotesAgainst;
-    }
-
-    struct CompletionData {
-        bool completed;
-        bool completionApproved;
-        uint256 completionVotesInFavor;
-        uint256 completionVotesAgainst;
-    }
-
-    // Main Proposal struct that references the other structs
-    struct Proposal {
-        // Basic Info
-        address payable proposer;
-        uint256 requestedAmount;
-        uint256 submissionTime;
-        bool isRejected;
-        bool fundsReleased;
-        
-        // Structured Data
-        ImageData imageData;
-        InitialVoting initialVoting;
-        MainDAOData mainDAO;
-        SubDAOData subDAO;
-        CompletionData completion;
-    }
 
     Proposal[] public proposals;
     address public gnosisSafe; // Gnosis Safe multisig wallet address
@@ -78,6 +26,8 @@ contract RetroFund {
     event MainDAOCompletionVoted(uint256 proposalId, address voter, bool inFavor);
     event SubDAOCompletionVoted(uint256 proposalId, address voter, bool inFavor);
     event ProposalFinalized(uint256 indexed proposalId, bool approved);
+    event MainDAOProgressVoted(uint256 proposalId, address voter, bool inFavor);
+    event SubDAOProgressVoted(uint256 proposalId, address voter, bool inFavor);
 
     modifier onlyTrustedCommittee() {
         require(trustedCommittee[msg.sender], "Not part of trusted committee");
@@ -115,48 +65,63 @@ contract RetroFund {
     // uses input params to set the startImageHash and requestedAmount
     // initializes other fields with default values 
 
-    function submitProposal(string calldata _startImageHash, uint256 _requestedAmount) external {
+    function submitProposal(
+        string memory startImageHash,
+        uint256 requestedAmount,
+        uint256 estimatedDays    // Added: number of days estimated for completion
+    ) external returns (uint256) {
         Proposal storage newProposal = proposals.push();
         
         // Basic Info
         newProposal.proposer = payable(msg.sender);
-        newProposal.requestedAmount = _requestedAmount;
+        newProposal.requestedAmount = requestedAmount;
         newProposal.submissionTime = block.timestamp;
-        newProposal.isRejected = false;
-        newProposal.fundsReleased = false;
+        
+        // Calculate timing checkpoints
+        newProposal.estimatedCompletionTime = block.timestamp + (estimatedDays * 1 days);
+        newProposal.midpointTime = block.timestamp + ((estimatedDays * 1 days) / 2);
+        
+        // Set initial voting stage
+        newProposal.initialVoting.startImageHash = startImageHash;
+        newProposal.initialVoting.votingStartTime = block.timestamp;
         
         // Image Data
-        newProposal.imageData.startImageHash = _startImageHash;
-        newProposal.imageData.finalImageHash = "";
+        newProposal.progressVoting.progressImageHash = "";
+        newProposal.completionVoting.finalImageHash = "";
         
         // Initial Voting
-        newProposal.initialVoting.approved = false;
-        newProposal.initialVoting.votesInFavor = 0;
-        newProposal.initialVoting.votesAgainst = 0;
+        newProposal.initialVoting.mainDAOApproved = false;
+        newProposal.initialVoting.mainDAOVotesInFavor = 0;
+        newProposal.initialVoting.mainDAOVotesAgainst = 0;
+        newProposal.initialVoting.subDAOApproved = false;
+        newProposal.initialVoting.subDAOVotesInFavor = 0;
+        newProposal.initialVoting.subDAOVotesAgainst = 0;
+        newProposal.initialVoting.stageApproved = false;
+        newProposal.initialVoting.votingStartTime = block.timestamp;
         
-        // Main DAO
-        newProposal.mainDAO.approved = false;
-        newProposal.mainDAO.votesInFavor = 0;
-        newProposal.mainDAO.votesAgainst = 0;
-        newProposal.mainDAO.completionApproved = false;
-        newProposal.mainDAO.completionVotesInFavor = 0;
-        newProposal.mainDAO.completionVotesAgainst = 0;
+        // Progress Voting
+        newProposal.progressVoting.mainDAOApproved = false;
+        newProposal.progressVoting.mainDAOVotesInFavor = 0;
+        newProposal.progressVoting.mainDAOVotesAgainst = 0;
+        newProposal.progressVoting.subDAOApproved = false;
+        newProposal.progressVoting.subDAOVotesInFavor = 0;
+        newProposal.progressVoting.subDAOVotesAgainst = 0;
+        newProposal.progressVoting.stageApproved = false;
+        newProposal.progressVoting.votingStartTime = block.timestamp;
         
-        // Sub DAO
-        newProposal.subDAO.approved = false;
-        newProposal.subDAO.votesInFavor = 0;
-        newProposal.subDAO.votesAgainst = 0;
-        newProposal.subDAO.completionApproved = false;
-        newProposal.subDAO.completionVotesInFavor = 0;
-        newProposal.subDAO.completionVotesAgainst = 0;
+        // Completion Voting
+        newProposal.completionVoting.mainDAOApproved = false;
+        newProposal.completionVoting.mainDAOVotesInFavor = 0;
+        newProposal.completionVoting.mainDAOVotesAgainst = 0;
+        newProposal.completionVoting.subDAOApproved = false;
+        newProposal.completionVoting.subDAOVotesInFavor = 0;
+        newProposal.completionVoting.subDAOVotesAgainst = 0;
+        newProposal.completionVoting.stageApproved = false;
+        newProposal.completionVoting.votingStartTime = block.timestamp;
+        newProposal.completionVoting.completed = false;
         
-        // Completion
-        newProposal.completion.completed = false;
-        newProposal.completion.completionApproved = false;
-        newProposal.completion.completionVotesInFavor = 0;
-        newProposal.completion.completionVotesAgainst = 0;
-        
-        emit ProposalSubmitted(proposals.length - 1, msg.sender, _requestedAmount, _startImageHash);
+        emit ProposalSubmitted(proposals.length - 1, msg.sender, requestedAmount, startImageHash);
+        return proposals.length - 1;
     }
 
     // DAO members vote on the proposal
@@ -164,19 +129,19 @@ contract RetroFund {
         // retrieves the proposal from the proposals array using the provided _proposalId
         Proposal storage proposal = proposals[_proposalId];
         // checks if the proposal has already been approved
-        require(!proposal.initialVoting.approved, "Proposal already approved");
+        require(!proposal.initialVoting.stageApproved, "Proposal already approved");
         // if the proposal has not been approved, it increments the appropriate vote counter based on the _inFavor parameter
         if (_inFavor) {
-            proposal.initialVoting.votesInFavor++;
+            proposal.initialVoting.mainDAOVotesInFavor++;
         } else {
-            proposal.initialVoting.votesAgainst++;
+            proposal.initialVoting.mainDAOVotesAgainst++;
         }
 
         // If majority votes in favor and total votes exceed threshold, approve the proposal
-        uint256 totalVotes = proposal.initialVoting.votesInFavor + proposal.initialVoting.votesAgainst;
+        uint256 totalVotes = proposal.initialVoting.mainDAOVotesInFavor + proposal.initialVoting.mainDAOVotesAgainst;
         uint256 voteThreshold = 5; // Example threshold, adjust as needed
-        if (proposal.initialVoting.votesInFavor > proposal.initialVoting.votesAgainst && totalVotes > voteThreshold) {
-            proposal.initialVoting.approved = true;
+        if (proposal.initialVoting.mainDAOVotesInFavor > proposal.initialVoting.mainDAOVotesAgainst && totalVotes > voteThreshold) {
+            proposal.initialVoting.mainDAOApproved = true;
         }
 
         emit ProposalVoted(_proposalId, msg.sender, _inFavor);
@@ -190,12 +155,14 @@ contract RetroFund {
     function declareProjectCompletion(uint256 _proposalId, string calldata _finalImageHash) external {
         Proposal storage proposal = proposals[_proposalId];
         require(proposal.proposer == msg.sender, "Only proposer can declare completion");
-        require(proposal.initialVoting.approved, "Proposal must be approved before completion");
+        require(proposal.initialVoting.stageApproved, "Proposal must be approved before completion");
+        require(proposal.progressVoting.stageApproved, "Progress voting must be approved");
         require(!proposal.isRejected, "Proposal was rejected");
-        require(!proposal.completion.completed, "Project already marked as completed");
+        require(!proposal.completionVoting.completed, "Project already marked as completed");
         
-        proposal.completion.completed = true;
-        proposal.imageData.finalImageHash = _finalImageHash;
+        proposal.completionVoting.completed = true;
+        proposal.completionVoting.finalImageHash = _finalImageHash;
+        proposal.completionVoting.votingStartTime = block.timestamp;
 
         emit ProposalCompleted(_proposalId, _finalImageHash);
     }
@@ -204,20 +171,20 @@ contract RetroFund {
         // retrieves the proposal from the proposals array using the provided _proposalId
         Proposal storage proposal = proposals[_proposalId];
         // ensures that the project has been marked as completed
-        require(proposal.completion.completed, "Project must be marked as completed first");
+        require(proposal.completionVoting.completed, "Project must be marked as completed first");
         // ensures that the completion has not already been approved
-        require(!proposal.completion.completionApproved, "Completion already approved");
+        require(!proposal.completionVoting.stageApproved, "Completion already approved");
 
         // increments the appropriate vote counter based on the _inFavor parameter
         if (_inFavor) {
-            proposal.completion.completionVotesInFavor++;
+            proposal.completionVoting.subDAOVotesInFavor++;
         } else {
-            proposal.completion.completionVotesAgainst++;
+            proposal.completionVoting.subDAOVotesAgainst++;
         }
 
         // If majority votes in favor, approve the completion
-        if (proposal.completion.completionVotesInFavor > proposal.completion.completionVotesAgainst) {
-            proposal.completion.completionApproved = true;
+        if (proposal.completionVoting.subDAOVotesInFavor > proposal.completionVoting.subDAOVotesAgainst) {
+            proposal.completionVoting.stageApproved = true;
             emit CompletionApproved(_proposalId);
         }
 
@@ -227,11 +194,11 @@ contract RetroFund {
     // Releases the funds to a project proposer after their proposal has been approved and completed 
     function releaseFunds(uint256 _proposalId) external {
         Proposal storage proposal = proposals[_proposalId];
-        require(proposal.initialVoting.approved, "Proposal not approved");
+        require(proposal.initialVoting.stageApproved, "Proposal not approved");
         require(!proposal.isRejected, "Proposal was rejected");
-        require(proposal.completion.completed, "Project must be completed");
+        require(proposal.completionVoting.completed, "Project must be completed");
         require(!proposal.fundsReleased, "Funds already released");
-        require(proposal.mainDAO.completionApproved && proposal.subDAO.completionApproved, 
+        require(proposal.completionVoting.mainDAOApproved && proposal.completionVoting.subDAOApproved, 
                 "Both Main DAO and SubDAO must approve completion");
         
         proposal.fundsReleased = true;
@@ -252,19 +219,21 @@ contract RetroFund {
     function voteFromMainDAO(uint256 _proposalId, bool _inFavor) external onlyMainDAO {
         Proposal storage proposal = proposals[_proposalId];
         require(!isVotingPeriodEnded(_proposalId), "Voting period ended");
-        require(!proposal.mainDAO.approved, "Main DAO already approved");
+        require(!proposal.initialVoting.mainDAOApproved, "Main DAO already approved");
         require(!proposal.isRejected, "Proposal already rejected");
         
         if (_inFavor) {
-            proposal.mainDAO.votesInFavor++;
+            proposal.initialVoting.mainDAOVotesInFavor++;
         } else {
-            proposal.mainDAO.votesAgainst++;
+            proposal.initialVoting.mainDAOVotesAgainst++;
         }
 
-        uint256 totalVotes = proposal.mainDAO.votesInFavor + proposal.mainDAO.votesAgainst;
+        uint256 totalVotes = proposal.initialVoting.mainDAOVotesInFavor + 
+                            proposal.initialVoting.mainDAOVotesAgainst;
         uint256 voteThreshold = 5; // Adjust as needed
-        if (proposal.mainDAO.votesInFavor > proposal.mainDAO.votesAgainst && totalVotes >= voteThreshold) {
-            proposal.mainDAO.approved = true;
+        if (proposal.initialVoting.mainDAOVotesInFavor > proposal.initialVoting.mainDAOVotesAgainst && 
+            totalVotes >= voteThreshold) {
+            proposal.initialVoting.mainDAOApproved = true;
         }
 
         emit MainDAOVoted(_proposalId, msg.sender, _inFavor);
@@ -273,19 +242,21 @@ contract RetroFund {
     function voteFromSubDAO(uint256 _proposalId, bool _inFavor) external onlySubDAO {
         Proposal storage proposal = proposals[_proposalId];
         require(!isVotingPeriodEnded(_proposalId), "Voting period ended");
-        require(!proposal.subDAO.approved, "SubDAO already approved");
+        require(!proposal.initialVoting.subDAOApproved, "SubDAO already approved");
         require(!proposal.isRejected, "Proposal already rejected");
         
         if (_inFavor) {
-            proposal.subDAO.votesInFavor++;
+            proposal.initialVoting.subDAOVotesInFavor++;
         } else {
-            proposal.subDAO.votesAgainst++;
+            proposal.initialVoting.subDAOVotesAgainst++;
         }
 
-        uint256 totalVotes = proposal.subDAO.votesInFavor + proposal.subDAO.votesAgainst;
+        uint256 totalVotes = proposal.initialVoting.subDAOVotesInFavor + 
+                            proposal.initialVoting.subDAOVotesAgainst;
         uint256 voteThreshold = 3; // Adjust as needed
-        if (proposal.subDAO.votesInFavor > proposal.subDAO.votesAgainst && totalVotes >= voteThreshold) {
-            proposal.subDAO.approved = true;
+        if (proposal.initialVoting.subDAOVotesInFavor > proposal.initialVoting.subDAOVotesAgainst && 
+            totalVotes >= voteThreshold) {
+            proposal.initialVoting.subDAOApproved = true;
         }
 
         emit SubDAOVoted(_proposalId, msg.sender, _inFavor);
@@ -294,17 +265,19 @@ contract RetroFund {
     // Similar split for completion voting
     function voteOnCompletionFromMainDAO(uint256 _proposalId, bool _inFavor) external onlyMainDAO {
         Proposal storage proposal = proposals[_proposalId];
-        require(proposal.completion.completed, "Project must be marked as completed first");
-        require(!proposal.mainDAO.completionApproved, "Main DAO completion already approved");
+        require(proposal.progressVoting.stageApproved, "Progress voting must be approved first");
+        require(proposal.completionVoting.completed, "Project must be marked as completed first");
+        require(_isInCompletionVotingWindow(_proposalId), "Not in completion voting window");
+        require(!proposal.completionVoting.mainDAOApproved, "Main DAO already voted on completion");
 
         if (_inFavor) {
-            proposal.mainDAO.completionVotesInFavor++;
+            proposal.completionVoting.mainDAOVotesInFavor++;
         } else {
-            proposal.mainDAO.completionVotesAgainst++;
+            proposal.completionVoting.mainDAOVotesAgainst++;
         }
 
-        if (proposal.mainDAO.completionVotesInFavor > proposal.mainDAO.completionVotesAgainst) {
-            proposal.mainDAO.completionApproved = true;
+        if (proposal.completionVoting.mainDAOVotesInFavor > proposal.completionVoting.mainDAOVotesAgainst) {
+            proposal.completionVoting.mainDAOApproved = true;
         }
 
         emit MainDAOCompletionVoted(_proposalId, msg.sender, _inFavor);
@@ -312,17 +285,19 @@ contract RetroFund {
 
     function voteOnCompletionFromSubDAO(uint256 _proposalId, bool _inFavor) external onlySubDAO {
         Proposal storage proposal = proposals[_proposalId];
-        require(proposal.completion.completed, "Project must be marked as completed first");
-        require(!proposal.subDAO.completionApproved, "SubDAO completion already approved");
+        require(proposal.progressVoting.stageApproved, "Progress voting must be approved first");
+        require(proposal.completionVoting.completed, "Project must be marked as completed first");
+        require(_isInCompletionVotingWindow(_proposalId), "Not in completion voting window");
+        require(!proposal.completionVoting.subDAOApproved, "SubDAO already voted on completion");
 
         if (_inFavor) {
-            proposal.subDAO.completionVotesInFavor++;
+            proposal.completionVoting.subDAOVotesInFavor++;
         } else {
-            proposal.subDAO.completionVotesAgainst++;
+            proposal.completionVoting.subDAOVotesAgainst++;
         }
 
-        if (proposal.subDAO.completionVotesInFavor > proposal.subDAO.completionVotesAgainst) {
-            proposal.subDAO.completionApproved = true;
+        if (proposal.completionVoting.subDAOVotesInFavor > proposal.completionVoting.subDAOVotesAgainst) {
+            proposal.completionVoting.subDAOApproved = true;
         }
 
         emit SubDAOCompletionVoted(_proposalId, msg.sender, _inFavor);
@@ -337,20 +312,90 @@ contract RetroFund {
     // Add function to finalize voting
     function finalizeVoting(uint256 _proposalId) external {
         Proposal storage proposal = proposals[_proposalId];
-        require(!proposal.initialVoting.approved && !proposal.isRejected, "Proposal already finalized");
+        require(!proposal.initialVoting.stageApproved && !proposal.isRejected, "Proposal already finalized");
         require(isVotingPeriodEnded(_proposalId), "Cooldown period not ended");
 
         // Check both Main DAO and SubDAO votes
-        bool mainDAOApproved = proposal.mainDAO.votesInFavor > proposal.mainDAO.votesAgainst;
-        bool subDAOApproved = proposal.subDAO.votesInFavor > proposal.subDAO.votesAgainst;
+        bool mainDAOApproved = proposal.initialVoting.mainDAOVotesInFavor > 
+                              proposal.initialVoting.mainDAOVotesAgainst;
+        bool subDAOApproved = proposal.initialVoting.subDAOVotesInFavor > 
+                             proposal.initialVoting.subDAOVotesAgainst;
 
         // Only approve if both DAOs approved
         if (mainDAOApproved && subDAOApproved) {
-            proposal.initialVoting.approved = true;
+            proposal.initialVoting.stageApproved = true;
         } else {
             proposal.isRejected = true;
         }
 
-        emit ProposalFinalized(_proposalId, proposal.initialVoting.approved);
+        emit ProposalFinalized(_proposalId, proposal.initialVoting.stageApproved);
     }
+
+    // Update progress voting functions
+    function voteOnProgressFromMainDAO(uint256 _proposalId, bool _inFavor) external onlyMainDAO {
+        Proposal storage proposal = proposals[_proposalId];
+        require(proposal.initialVoting.stageApproved, "Initial voting must be approved first");
+        require(_isInProgressVotingWindow(_proposalId), "Not in progress voting window");
+        require(!proposal.progressVoting.mainDAOApproved, "Main DAO already voted on progress");
+        require(!proposal.isRejected, "Proposal was rejected");
+
+        if (_inFavor) {
+            proposal.progressVoting.mainDAOVotesInFavor++;
+        } else {
+            proposal.progressVoting.mainDAOVotesAgainst++;
+        }
+
+        if (proposal.progressVoting.mainDAOVotesInFavor > proposal.progressVoting.mainDAOVotesAgainst) {
+            proposal.progressVoting.mainDAOApproved = true;
+        }
+
+        emit MainDAOProgressVoted(_proposalId, msg.sender, _inFavor);
+    }
+
+    function voteOnProgressFromSubDAO(uint256 _proposalId, bool _inFavor) external onlySubDAO {
+        Proposal storage proposal = proposals[_proposalId];
+        require(proposal.initialVoting.stageApproved, "Initial voting must be approved first");
+        require(_isInProgressVotingWindow(_proposalId), "Not in progress voting window");
+        require(!proposal.progressVoting.subDAOApproved, "SubDAO already voted on progress");
+        require(!proposal.isRejected, "Proposal was rejected");
+
+        if (_inFavor) {
+            proposal.progressVoting.subDAOVotesInFavor++;
+        } else {
+            proposal.progressVoting.subDAOVotesAgainst++;
+        }
+
+        if (proposal.progressVoting.subDAOVotesInFavor > proposal.progressVoting.subDAOVotesAgainst) {
+            proposal.progressVoting.subDAOApproved = true;
+        }
+
+        emit SubDAOProgressVoted(_proposalId, msg.sender, _inFavor);
+    }
+
+    // Internal helper functions
+    function _isInProgressVotingWindow(uint256 _proposalId) internal view returns (bool) {
+        Proposal storage proposal = proposals[_proposalId];
+        // Allow voting within ±3 days of midpoint
+        uint256 windowBuffer = 3 days;
+        return block.timestamp >= proposal.midpointTime - windowBuffer && 
+               block.timestamp <= proposal.midpointTime + windowBuffer;
+    }
+
+    function _isInCompletionVotingWindow(uint256 _proposalId) internal view returns (bool) {
+        Proposal storage proposal = proposals[_proposalId];
+        // Allow voting within ±3 days of estimated completion
+        uint256 windowBuffer = 3 days;
+        return block.timestamp >= proposal.estimatedCompletionTime - windowBuffer && 
+               block.timestamp <= proposal.estimatedCompletionTime + windowBuffer;
+    }
+
+    // External wrapper functions
+    function isInProgressVotingWindow(uint256 _proposalId) external view returns (bool) {
+        return _isInProgressVotingWindow(_proposalId);
+    }
+
+    function isInCompletionVotingWindow(uint256 _proposalId) external view returns (bool) {
+        return _isInCompletionVotingWindow(_proposalId);
+    }
+
 }

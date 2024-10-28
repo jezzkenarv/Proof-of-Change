@@ -7,36 +7,58 @@ import "safe-smart-account/contracts/Safe.sol"; //
 contract RetroFund {
     uint256 constant public COOLDOWN_PERIOD = 72 hours;
     
-    struct Proposal {
-        address payable proposer;
-        string startImageHash; // IPFS hash for starting image (commitment)
-        uint256 requestedAmount;
+    // Define structs separately
+    struct ImageData {
+        string startImageHash;
+        string finalImageHash;
+    }
+
+    struct InitialVoting {
         bool approved;
-        bool completed;
-        bool fundsReleased;
-        string finalImageHash; // IPFS hash for final image
         uint256 votesInFavor;
         uint256 votesAgainst;
+    }
+
+    struct MainDAOData {
+        bool approved;
+        uint256 votesInFavor;
+        uint256 votesAgainst;
+        bool completionApproved;
         uint256 completionVotesInFavor;
         uint256 completionVotesAgainst;
+    }
+
+    struct SubDAOData {
+        bool approved;
+        uint256 votesInFavor;
+        uint256 votesAgainst;
         bool completionApproved;
-        bool mainDAOApproved;      // New: tracks main DAO approval
-        bool subDAOApproved;       // New: tracks subDAO approval
-        // Main DAO votes
-        uint256 mainDAOVotesInFavor;
-        uint256 mainDAOVotesAgainst;
-        // SubDAO votes
-        uint256 subDAOVotesInFavor;
-        uint256 subDAOVotesAgainst;
-        // Completion votes
-        bool mainDAOCompletionApproved;    // New: separate completion approvals
-        bool subDAOCompletionApproved;     // New: separate completion approvals
-        uint256 mainDAOCompletionVotesInFavor;
-        uint256 mainDAOCompletionVotesAgainst;
-        uint256 subDAOCompletionVotesInFavor;
-        uint256 subDAOCompletionVotesAgainst;
-        uint256 submissionTime;    // New: tracks when proposal was submitted
-        bool isRejected;          // New: explicitly tracks rejection status
+        uint256 completionVotesInFavor;
+        uint256 completionVotesAgainst;
+    }
+
+    struct CompletionData {
+        bool completed;
+        bool completionApproved;
+        uint256 completionVotesInFavor;
+        uint256 completionVotesAgainst;
+    }
+
+    // Main Proposal struct that references the other structs
+    struct Proposal {
+        // Basic Info
+        address payable proposer;
+        uint256 requestedAmount;
+        uint256 submissionTime;
+        bool isRejected;
+        bool fundsReleased;
+        
+        // Structured Data
+        ImageData imageData;
+        InitialVoting initialVoting;
+        MainDAOData mainDAO;
+        SubDAOData subDAO;
+        CompletionData completion;
     }
 
     Proposal[] public proposals;
@@ -94,29 +116,45 @@ contract RetroFund {
     // initializes other fields with default values 
 
     function submitProposal(string calldata _startImageHash, uint256 _requestedAmount) external {
-        proposals.push(Proposal({
-            proposer: payable(msg.sender),
-            startImageHash: _startImageHash,
-            requestedAmount: _requestedAmount,
-            approved: false,
-            isRejected: false,
-            submissionTime: block.timestamp,  // Add submission time
-            completed: false,
-            fundsReleased: false,
-            finalImageHash: "",
-            mainDAOApproved: false,
-            subDAOApproved: false,
-            mainDAOVotesInFavor: 0,
-            mainDAOVotesAgainst: 0,
-            subDAOVotesInFavor: 0,
-            subDAOVotesAgainst: 0,
-            mainDAOCompletionApproved: false,
-            subDAOCompletionApproved: false,
-            mainDAOCompletionVotesInFavor: 0,
-            mainDAOCompletionVotesAgainst: 0,
-            subDAOCompletionVotesInFavor: 0,
-            subDAOCompletionVotesAgainst: 0
-        }));
+        Proposal storage newProposal = proposals.push();
+        
+        // Basic Info
+        newProposal.proposer = payable(msg.sender);
+        newProposal.requestedAmount = _requestedAmount;
+        newProposal.submissionTime = block.timestamp;
+        newProposal.isRejected = false;
+        newProposal.fundsReleased = false;
+        
+        // Image Data
+        newProposal.imageData.startImageHash = _startImageHash;
+        newProposal.imageData.finalImageHash = "";
+        
+        // Initial Voting
+        newProposal.initialVoting.approved = false;
+        newProposal.initialVoting.votesInFavor = 0;
+        newProposal.initialVoting.votesAgainst = 0;
+        
+        // Main DAO
+        newProposal.mainDAO.approved = false;
+        newProposal.mainDAO.votesInFavor = 0;
+        newProposal.mainDAO.votesAgainst = 0;
+        newProposal.mainDAO.completionApproved = false;
+        newProposal.mainDAO.completionVotesInFavor = 0;
+        newProposal.mainDAO.completionVotesAgainst = 0;
+        
+        // Sub DAO
+        newProposal.subDAO.approved = false;
+        newProposal.subDAO.votesInFavor = 0;
+        newProposal.subDAO.votesAgainst = 0;
+        newProposal.subDAO.completionApproved = false;
+        newProposal.subDAO.completionVotesInFavor = 0;
+        newProposal.subDAO.completionVotesAgainst = 0;
+        
+        // Completion
+        newProposal.completion.completed = false;
+        newProposal.completion.completionApproved = false;
+        newProposal.completion.completionVotesInFavor = 0;
+        newProposal.completion.completionVotesAgainst = 0;
         
         emit ProposalSubmitted(proposals.length - 1, msg.sender, _requestedAmount, _startImageHash);
     }
@@ -126,19 +164,19 @@ contract RetroFund {
         // retrieves the proposal from the proposals array using the provided _proposalId
         Proposal storage proposal = proposals[_proposalId];
         // checks if the proposal has already been approved
-        require(!proposal.approved, "Proposal already approved");
+        require(!proposal.initialVoting.approved, "Proposal already approved");
         // if the proposal has not been approved, it increments the appropriate vote counter based on the _inFavor parameter
         if (_inFavor) {
-            proposal.votesInFavor++;
+            proposal.initialVoting.votesInFavor++;
         } else {
-            proposal.votesAgainst++;
+            proposal.initialVoting.votesAgainst++;
         }
 
         // If majority votes in favor and total votes exceed threshold, approve the proposal
-        uint256 totalVotes = proposal.votesInFavor + proposal.votesAgainst;
+        uint256 totalVotes = proposal.initialVoting.votesInFavor + proposal.initialVoting.votesAgainst;
         uint256 voteThreshold = 5; // Example threshold, adjust as needed
-        if (proposal.votesInFavor > proposal.votesAgainst && totalVotes > voteThreshold) {
-            proposal.approved = true;
+        if (proposal.initialVoting.votesInFavor > proposal.initialVoting.votesAgainst && totalVotes > voteThreshold) {
+            proposal.initialVoting.approved = true;
         }
 
         emit ProposalVoted(_proposalId, msg.sender, _inFavor);
@@ -152,12 +190,12 @@ contract RetroFund {
     function declareProjectCompletion(uint256 _proposalId, string calldata _finalImageHash) external {
         Proposal storage proposal = proposals[_proposalId];
         require(proposal.proposer == msg.sender, "Only proposer can declare completion");
-        require(proposal.approved, "Proposal must be approved before completion");
+        require(proposal.initialVoting.approved, "Proposal must be approved before completion");
         require(!proposal.isRejected, "Proposal was rejected");
-        require(!proposal.completed, "Project already marked as completed");
+        require(!proposal.completion.completed, "Project already marked as completed");
         
-        proposal.completed = true;
-        proposal.finalImageHash = _finalImageHash;
+        proposal.completion.completed = true;
+        proposal.imageData.finalImageHash = _finalImageHash;
 
         emit ProposalCompleted(_proposalId, _finalImageHash);
     }
@@ -166,20 +204,20 @@ contract RetroFund {
         // retrieves the proposal from the proposals array using the provided _proposalId
         Proposal storage proposal = proposals[_proposalId];
         // ensures that the project has been marked as completed
-        require(proposal.completed, "Project must be marked as completed first");
+        require(proposal.completion.completed, "Project must be marked as completed first");
         // ensures that the completion has not already been approved
-        require(!proposal.completionApproved, "Completion already approved");
+        require(!proposal.completion.completionApproved, "Completion already approved");
 
         // increments the appropriate vote counter based on the _inFavor parameter
         if (_inFavor) {
-            proposal.completionVotesInFavor++;
+            proposal.completion.completionVotesInFavor++;
         } else {
-            proposal.completionVotesAgainst++;
+            proposal.completion.completionVotesAgainst++;
         }
 
         // If majority votes in favor, approve the completion
-        if (proposal.completionVotesInFavor > proposal.completionVotesAgainst) {
-            proposal.completionApproved = true;
+        if (proposal.completion.completionVotesInFavor > proposal.completion.completionVotesAgainst) {
+            proposal.completion.completionApproved = true;
             emit CompletionApproved(_proposalId);
         }
 
@@ -189,11 +227,11 @@ contract RetroFund {
     // Releases the funds to a project proposer after their proposal has been approved and completed 
     function releaseFunds(uint256 _proposalId) external {
         Proposal storage proposal = proposals[_proposalId];
-        require(proposal.approved, "Proposal not approved");
+        require(proposal.initialVoting.approved, "Proposal not approved");
         require(!proposal.isRejected, "Proposal was rejected");
-        require(proposal.completed, "Project must be completed");
+        require(proposal.completion.completed, "Project must be completed");
         require(!proposal.fundsReleased, "Funds already released");
-        require(proposal.mainDAOCompletionApproved && proposal.subDAOCompletionApproved, 
+        require(proposal.mainDAO.completionApproved && proposal.subDAO.completionApproved, 
                 "Both Main DAO and SubDAO must approve completion");
         
         proposal.fundsReleased = true;
@@ -214,19 +252,19 @@ contract RetroFund {
     function voteFromMainDAO(uint256 _proposalId, bool _inFavor) external onlyMainDAO {
         Proposal storage proposal = proposals[_proposalId];
         require(!isVotingPeriodEnded(_proposalId), "Voting period ended");
-        require(!proposal.mainDAOApproved, "Main DAO already approved");
+        require(!proposal.mainDAO.approved, "Main DAO already approved");
         require(!proposal.isRejected, "Proposal already rejected");
         
         if (_inFavor) {
-            proposal.mainDAOVotesInFavor++;
+            proposal.mainDAO.votesInFavor++;
         } else {
-            proposal.mainDAOVotesAgainst++;
+            proposal.mainDAO.votesAgainst++;
         }
 
-        uint256 totalVotes = proposal.mainDAOVotesInFavor + proposal.mainDAOVotesAgainst;
+        uint256 totalVotes = proposal.mainDAO.votesInFavor + proposal.mainDAO.votesAgainst;
         uint256 voteThreshold = 5; // Adjust as needed
-        if (proposal.mainDAOVotesInFavor > proposal.mainDAOVotesAgainst && totalVotes >= voteThreshold) {
-            proposal.mainDAOApproved = true;
+        if (proposal.mainDAO.votesInFavor > proposal.mainDAO.votesAgainst && totalVotes >= voteThreshold) {
+            proposal.mainDAO.approved = true;
         }
 
         emit MainDAOVoted(_proposalId, msg.sender, _inFavor);
@@ -235,19 +273,19 @@ contract RetroFund {
     function voteFromSubDAO(uint256 _proposalId, bool _inFavor) external onlySubDAO {
         Proposal storage proposal = proposals[_proposalId];
         require(!isVotingPeriodEnded(_proposalId), "Voting period ended");
-        require(!proposal.subDAOApproved, "SubDAO already approved");
+        require(!proposal.subDAO.approved, "SubDAO already approved");
         require(!proposal.isRejected, "Proposal already rejected");
         
         if (_inFavor) {
-            proposal.subDAOVotesInFavor++;
+            proposal.subDAO.votesInFavor++;
         } else {
-            proposal.subDAOVotesAgainst++;
+            proposal.subDAO.votesAgainst++;
         }
 
-        uint256 totalVotes = proposal.subDAOVotesInFavor + proposal.subDAOVotesAgainst;
+        uint256 totalVotes = proposal.subDAO.votesInFavor + proposal.subDAO.votesAgainst;
         uint256 voteThreshold = 3; // Adjust as needed
-        if (proposal.subDAOVotesInFavor > proposal.subDAOVotesAgainst && totalVotes >= voteThreshold) {
-            proposal.subDAOApproved = true;
+        if (proposal.subDAO.votesInFavor > proposal.subDAO.votesAgainst && totalVotes >= voteThreshold) {
+            proposal.subDAO.approved = true;
         }
 
         emit SubDAOVoted(_proposalId, msg.sender, _inFavor);
@@ -256,17 +294,17 @@ contract RetroFund {
     // Similar split for completion voting
     function voteOnCompletionFromMainDAO(uint256 _proposalId, bool _inFavor) external onlyMainDAO {
         Proposal storage proposal = proposals[_proposalId];
-        require(proposal.completed, "Project must be marked as completed first");
-        require(!proposal.mainDAOCompletionApproved, "Main DAO completion already approved");
+        require(proposal.completion.completed, "Project must be marked as completed first");
+        require(!proposal.mainDAO.completionApproved, "Main DAO completion already approved");
 
         if (_inFavor) {
-            proposal.mainDAOCompletionVotesInFavor++;
+            proposal.mainDAO.completionVotesInFavor++;
         } else {
-            proposal.mainDAOCompletionVotesAgainst++;
+            proposal.mainDAO.completionVotesAgainst++;
         }
 
-        if (proposal.mainDAOCompletionVotesInFavor > proposal.mainDAOCompletionVotesAgainst) {
-            proposal.mainDAOCompletionApproved = true;
+        if (proposal.mainDAO.completionVotesInFavor > proposal.mainDAO.completionVotesAgainst) {
+            proposal.mainDAO.completionApproved = true;
         }
 
         emit MainDAOCompletionVoted(_proposalId, msg.sender, _inFavor);
@@ -274,17 +312,17 @@ contract RetroFund {
 
     function voteOnCompletionFromSubDAO(uint256 _proposalId, bool _inFavor) external onlySubDAO {
         Proposal storage proposal = proposals[_proposalId];
-        require(proposal.completed, "Project must be marked as completed first");
-        require(!proposal.subDAOCompletionApproved, "SubDAO completion already approved");
+        require(proposal.completion.completed, "Project must be marked as completed first");
+        require(!proposal.subDAO.completionApproved, "SubDAO completion already approved");
 
         if (_inFavor) {
-            proposal.subDAOCompletionVotesInFavor++;
+            proposal.subDAO.completionVotesInFavor++;
         } else {
-            proposal.subDAOCompletionVotesAgainst++;
+            proposal.subDAO.completionVotesAgainst++;
         }
 
-        if (proposal.subDAOCompletionVotesInFavor > proposal.subDAOCompletionVotesAgainst) {
-            proposal.subDAOCompletionApproved = true;
+        if (proposal.subDAO.completionVotesInFavor > proposal.subDAO.completionVotesAgainst) {
+            proposal.subDAO.completionApproved = true;
         }
 
         emit SubDAOCompletionVoted(_proposalId, msg.sender, _inFavor);
@@ -299,20 +337,20 @@ contract RetroFund {
     // Add function to finalize voting
     function finalizeVoting(uint256 _proposalId) external {
         Proposal storage proposal = proposals[_proposalId];
-        require(!proposal.approved && !proposal.isRejected, "Proposal already finalized");
+        require(!proposal.initialVoting.approved && !proposal.isRejected, "Proposal already finalized");
         require(isVotingPeriodEnded(_proposalId), "Cooldown period not ended");
 
         // Check both Main DAO and SubDAO votes
-        bool mainDAOApproved = proposal.mainDAOVotesInFavor > proposal.mainDAOVotesAgainst;
-        bool subDAOApproved = proposal.subDAOVotesInFavor > proposal.subDAOVotesAgainst;
+        bool mainDAOApproved = proposal.mainDAO.votesInFavor > proposal.mainDAO.votesAgainst;
+        bool subDAOApproved = proposal.subDAO.votesInFavor > proposal.subDAO.votesAgainst;
 
         // Only approve if both DAOs approved
         if (mainDAOApproved && subDAOApproved) {
-            proposal.approved = true;
+            proposal.initialVoting.approved = true;
         } else {
             proposal.isRejected = true;
         }
 
-        emit ProposalFinalized(_proposalId, proposal.approved);
+        emit ProposalFinalized(_proposalId, proposal.initialVoting.approved);
     }
 }

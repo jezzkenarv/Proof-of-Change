@@ -9,59 +9,75 @@ interface IRetroFund {
     /// @notice Stores voting data for the initial stage of a proposal
     /// @dev Used when a proposal is first submitted
     struct InitialVotingStage {
-        string startImageHash;          // IPFS hash of the initial project image
-        uint256 mainDAOVotesInFavor;   // Number of main DAO votes supporting
-        uint256 mainDAOVotesAgainst;   // Number of main DAO votes against
-        bool mainDAOApproved;          // Whether main DAO has approved
-        uint256 subDAOVotesInFavor;    // Number of sub DAO votes supporting
-        uint256 subDAOVotesAgainst;    // Number of sub DAO votes against
-        bool subDAOApproved;           // Whether sub DAO has approved
-        uint256 votingStartTime;       // Timestamp when voting began
-        bool stageApproved;            // Whether this stage was approved
+        string startImageHash; // IPFS hash of the initial project image
+        uint256 mainDAOVotesInFavor; // Number of main DAO votes supporting
+        uint256 mainDAOVotesAgainst; // Number of main DAO votes against
+        bool mainDAOApproved; // Whether main DAO has approved
+        uint256 subDAOVotesInFavor; // Number of sub DAO votes supporting
+        uint256 subDAOVotesAgainst; // Number of sub DAO votes against
+        bool subDAOApproved; // Whether sub DAO has approved
+        uint256 votingStartTime; // Timestamp when voting began
+        bool stageApproved; // Whether this stage was approved
     }
 
     /// @notice Stores voting data for the progress stage of a proposal
     /// @dev Used at project midpoint to verify progress
     struct ProgressVotingStage {
-        string progressImageHash;       // IPFS hash of the progress update image
-        uint256 mainDAOVotesInFavor;   // Number of main DAO votes supporting
-        uint256 mainDAOVotesAgainst;   // Number of main DAO votes against
-        bool mainDAOApproved;          // Whether main DAO has approved
-        uint256 subDAOVotesInFavor;    // Number of sub DAO votes supporting
-        uint256 subDAOVotesAgainst;    // Number of sub DAO votes against
-        bool subDAOApproved;           // Whether sub DAO has approved
-        uint256 votingStartTime;       // Timestamp when voting began
-        bool stageApproved;            // Whether this stage was approved
+        string progressImageHash; // IPFS hash of the progress update image
+        uint256 mainDAOVotesInFavor; // Number of main DAO votes supporting
+        uint256 mainDAOVotesAgainst; // Number of main DAO votes against
+        bool mainDAOApproved; // Whether main DAO has approved
+        uint256 subDAOVotesInFavor; // Number of sub DAO votes supporting
+        uint256 subDAOVotesAgainst; // Number of sub DAO votes against
+        bool subDAOApproved; // Whether sub DAO has approved
+        uint256 votingStartTime; // Timestamp when voting began
+        bool stageApproved; // Whether this stage was approved
     }
 
     /// @notice Stores voting data for the completion stage of a proposal
     /// @dev Used when project is marked as complete
     struct CompletionVotingStage {
-        string finalImageHash;          // IPFS hash of the final project image
-        uint256 mainDAOVotesInFavor;   // Number of main DAO votes supporting
-        uint256 mainDAOVotesAgainst;   // Number of main DAO votes against
-        bool mainDAOApproved;          // Whether main DAO has approved
-        uint256 subDAOVotesInFavor;    // Number of sub DAO votes supporting
-        uint256 subDAOVotesAgainst;    // Number of sub DAO votes against
-        bool subDAOApproved;           // Whether sub DAO has approved
-        uint256 votingStartTime;       // Timestamp when voting began
-        bool stageApproved;            // Whether this stage was approved
-        bool completed;                // Whether project is marked complete
+        string finalImageHash; // IPFS hash of the final project image
+        uint256 mainDAOVotesInFavor; // Number of main DAO votes supporting
+        uint256 mainDAOVotesAgainst; // Number of main DAO votes against
+        bool mainDAOApproved; // Whether main DAO has approved
+        uint256 subDAOVotesInFavor; // Number of sub DAO votes supporting
+        uint256 subDAOVotesAgainst; // Number of sub DAO votes against
+        bool subDAOApproved; // Whether sub DAO has approved
+        uint256 votingStartTime; // Timestamp when voting began
+        bool stageApproved; // Whether this stage was approved
+        bool completed; // Whether project is marked complete
     }
 
     /// @notice Main proposal struct containing all proposal data
     /// @dev Tracks the entire lifecycle of a proposal
     struct Proposal {
-        address payable proposer;           // Address that submitted the proposal
-        uint256 requestedAmount;            // Amount of funds requested
-        uint256 submissionTime;             // When proposal was submitted
-        uint256 estimatedCompletionTime;    // Expected completion timestamp
-        uint256 midpointTime;               // Midpoint check timestamp
-        bool isRejected;                    // Whether proposal was rejected
-        bool fundsReleased;                 // Whether funds were released
-        InitialVotingStage initialVoting;   // Initial voting stage data
+        address payable proposer; // Address that submitted the proposal
+        uint256 requestedAmount; // Amount of funds requested
+        uint256 submissionTime; // When proposal was submitted
+        uint256 estimatedCompletionTime; // Expected completion timestamp
+        uint256 midpointTime; // Midpoint check timestamp
+        bool isRejected; // Whether proposal was rejected
+        bool fundsReleased; // Whether funds were released
+        InitialVotingStage initialVoting; // Initial voting stage data
         ProgressVotingStage progressVoting; // Progress voting stage data
         CompletionVotingStage completionVoting; // Completion voting stage data
+    }
+
+    /// @notice Stores voting data for the progress stage of a proposal
+    /// @dev Used at project midpoint to verify progress
+    struct VotingStage {
+        bool mainDAOApproved;
+        uint256 mainDAOVotesInFavor;
+        uint256 mainDAOVotesAgainst;
+        bool subDAOApproved;
+        uint256 subDAOVotesInFavor;
+        uint256 subDAOVotesAgainst;
+        bool stageApproved;
+        uint256 votingStartTime;
+        string startImageHash; // for initial voting
+        string finalImageHash; // for completion voting
+        bool completed; // for completion voting
     }
 
     // Events
@@ -91,6 +107,10 @@ interface IRetroFund {
     event MainDAOProgressVoted(uint256 proposalId, address voter, bool inFavor);
     /// @notice Emitted when sub DAO votes on progress
     event SubDAOProgressVoted(uint256 proposalId, address voter, bool inFavor);
+    /// @notice Emitted when a proposal is finalized
+    event ProposalProgressFinalized(uint256 indexed proposalId, bool approved);
+    /// @notice Emitted when a proposal is finalized
+    event ProposalCompletionFinalized(uint256 indexed proposalId, bool approved);
 
     // External Functions
     /// @notice Submit a new proposal
@@ -98,11 +118,9 @@ interface IRetroFund {
     /// @param requestedAmount Amount of funds requested
     /// @param estimatedDays Estimated days until completion
     /// @return proposalId The ID of the newly created proposal
-    function submitProposal(
-        string memory startImageHash,
-        uint256 requestedAmount,
-        uint256 estimatedDays
-    ) external returns (uint256);
+    function submitProposal(string memory startImageHash, uint256 requestedAmount, uint256 estimatedDays)
+        external
+        returns (uint256);
 
     /// @notice Cast a vote from main DAO
     /// @param _proposalId The proposal being voted on
@@ -123,7 +141,7 @@ interface IRetroFund {
 
     /// @notice Cast a completion vote from sub DAO
     function voteOnCompletionFromSubDAO(uint256 _proposalId, bool _inFavor) external;
-    
+
     /// @notice Mark a project as complete
     /// @param _proposalId The proposal being completed
     /// @param _finalImageHash IPFS hash of the final project image
@@ -157,9 +175,6 @@ interface IRetroFund {
 
     /// @notice Get the Gnosis Safe address
     function gnosisSafe() external view returns (address);
-
-    /// @notice Check if address is trusted committee member
-    function trustedCommittee(address) external view returns (bool);
 
     /// @notice Check if address is main DAO member
     function mainDAOMembers(address) external view returns (bool);

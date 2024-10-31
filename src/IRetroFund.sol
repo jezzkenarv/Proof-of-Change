@@ -63,23 +63,7 @@ interface IRetroFund {
         ProgressVotingStage progressVoting; // Progress voting stage data
         CompletionVotingStage completionVoting; // Completion voting stage data
     }
-
-    /// @notice Stores voting data for the progress stage of a proposal
-    /// @dev Used at project midpoint to verify progress
-    struct VotingStage {
-        bool mainDAOApproved;
-        uint256 mainDAOVotesInFavor;
-        uint256 mainDAOVotesAgainst;
-        bool subDAOApproved;
-        uint256 subDAOVotesInFavor;
-        uint256 subDAOVotesAgainst;
-        bool stageApproved;
-        uint256 votingStartTime;
-        string startImageHash; // for initial voting
-        string finalImageHash; // for completion voting
-        bool completed; // for completion voting
-    }
-
+    
     // Events
     /// @notice Emitted when a new proposal is submitted
     event ProposalSubmitted(uint256 proposalId, address proposer, uint256 amount, string startImageHash);
@@ -181,4 +165,7 @@ interface IRetroFund {
 
     /// @notice Check if address is sub DAO member
     function subDAOMembers(address) external view returns (bool);
+
+    // Add the hasVoted mapping to the interface
+    function hasVoted(uint256 proposalId, address voter, uint8 stage) external view returns (bool);
 }

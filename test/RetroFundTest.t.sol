@@ -59,7 +59,7 @@ contract RetroFundTest is Test {
         uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
         vm.stopPrank();
 
-        IRetroFund.Proposal memory proposal = retroFund.proposals(proposalId);
+        RetroFund.Proposal memory proposal = retroFund.proposals(proposalId);
         assertEq(proposal.proposer, proposer);
         assertEq(proposal.requestedAmount, REQUESTED_AMOUNT);
         assertEq(proposal.initialVoting.startImageHash, START_IMAGE_HASH);
@@ -147,7 +147,7 @@ contract RetroFundTest is Test {
         // Finalize voting
         retroFund.finalizeVoting(proposalId);
 
-        IRetroFund.Proposal memory proposal = retroFund.proposals(proposalId);
+        RetroFund.Proposal memory proposal = retroFund.proposals(proposalId);
         assertTrue(proposal.initialVoting.stageApproved);
     }
 
@@ -171,7 +171,7 @@ contract RetroFundTest is Test {
         retroFund.finalizeVoting(proposalId);
 
         // Warp to progress voting window
-        IRetroFund.Proposal memory proposal = retroFund.proposals(proposalId);
+        RetroFund.Proposal memory proposal = retroFund.proposals(proposalId);
         vm.warp(proposal.midpointTime);
 
         // Test progress voting
@@ -180,7 +180,7 @@ contract RetroFundTest is Test {
             retroFund.voteOnProgressFromMainDAO(proposalId, true);
 
             // Debug: Check mainDAO state after each vote
-            IRetroFund.Proposal memory proposalState = retroFund.proposals(proposalId);
+            RetroFund.Proposal memory proposalState = retroFund.proposals(proposalId);
             console.log("MainDAO Vote", i + 1);
             console.log("MainDAO Votes For:", proposalState.progressVoting.mainDAOVotesInFavor);
             console.log("MainDAO Votes Against:", proposalState.progressVoting.mainDAOVotesAgainst);
@@ -192,7 +192,7 @@ contract RetroFundTest is Test {
             retroFund.voteOnProgressFromSubDAO(proposalId, true);
 
             // Debug: Check subDAO state after each vote
-            IRetroFund.Proposal memory proposalState = retroFund.proposals(proposalId);
+            RetroFund.Proposal memory proposalState = retroFund.proposals(proposalId);
             console.log("SubDAO Vote", i + 1);
             console.log("SubDAO Votes For:", proposalState.progressVoting.subDAOVotesInFavor);
             console.log("SubDAO Votes Against:", proposalState.progressVoting.subDAOVotesAgainst);
@@ -200,7 +200,7 @@ contract RetroFundTest is Test {
         }
 
         // Add final state logging
-        IRetroFund.Proposal memory finalState = retroFund.proposals(proposalId);
+        RetroFund.Proposal memory finalState = retroFund.proposals(proposalId);
         console.log("\nFinal Voting State:");
         console.log("Final MainDAO votes in favor:", finalState.progressVoting.mainDAOVotesInFavor);
         console.log("Final SubDAO votes in favor:", finalState.progressVoting.subDAOVotesInFavor);
@@ -234,20 +234,45 @@ contract RetroFundTest is Test {
 
         // Progress voting setup
         vm.warp(retroFund.proposals(proposalId).midpointTime);
+        console.log("\n=== Progress Voting Phase ===");
 
         // Vote from main DAO members (only once per member)
         for (uint256 i = 0; i < mainDAOMembers.length; i++) {
             vm.prank(mainDAOMembers[i]);
             retroFund.voteOnProgressFromMainDAO(proposalId, true);
+
+            // Debug: Check mainDAO state after each vote
+            RetroFund.Proposal memory proposalState = retroFund.proposals(proposalId);
+            console.log("MainDAO Vote", i + 1);
+            console.log("MainDAO Votes For:", proposalState.progressVoting.mainDAOVotesInFavor);
+            console.log("MainDAO Votes Against:", proposalState.progressVoting.mainDAOVotesAgainst);
+            console.log("MainDAO Approved:", proposalState.progressVoting.mainDAOApproved);
         }
 
-        // Vote from sub DAO members (only once per member)
         for (uint256 i = 0; i < subDAOMembers.length; i++) {
             vm.prank(subDAOMembers[i]);
             retroFund.voteOnProgressFromSubDAO(proposalId, true);
+
+            // Debug: Check subDAO state after each vote
+            RetroFund.Proposal memory proposalState = retroFund.proposals(proposalId);
+            console.log("SubDAO Vote", i + 1);
+            console.log("SubDAO Votes For:", proposalState.progressVoting.subDAOVotesInFavor);
+            console.log("SubDAO Votes Against:", proposalState.progressVoting.subDAOVotesAgainst);
+            console.log("SubDAO Approved:", proposalState.progressVoting.subDAOApproved);
         }
 
-        // Declare completion
+        // Finalize progress voting
+        vm.warp(block.timestamp + retroFund.COOLDOWN_PERIOD());
+        retroFund.finalizeVoting(proposalId);
+        
+        // // Verify progress voting was finalized
+        // RetroFund.Proposal memory progressState = retroFund.proposals(proposalId);
+
+        // Warp to completion time
+        RetroFund.Proposal memory completionState = retroFund.proposals(proposalId);
+        vm.warp(completionState.estimatedCompletionTime);
+
+        // Continue with completion phase
         vm.prank(proposer);
         retroFund.declareProjectCompletion(proposalId, FINAL_IMAGE_HASH);
 
@@ -261,20 +286,22 @@ contract RetroFundTest is Test {
             retroFund.voteOnCompletionFromSubDAO(proposalId, true);
         }
 
-        IRetroFund.Proposal memory proposal = retroFund.proposals(proposalId);
+        RetroFund.Proposal memory proposal = retroFund.proposals(proposalId);
         assertTrue(proposal.completionVoting.completed);
         assertTrue(proposal.completionVoting.mainDAOApproved);
         assertTrue(proposal.completionVoting.subDAOApproved);
     }
 
     // Test failure cases
+
     function testFailureUnauthorizedVote() public {
         vm.prank(proposer);
         uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
 
         // Try to vote as non-DAO member
         vm.prank(address(0x999));
-        vm.expectRevert("Not part of main DAO");
+        // The test will fail if the expected revert message doesn't match exactly with the actual revert message
+        vm.expectRevert("Not a member of the main DAO");
         retroFund.voteFromMainDAO(proposalId, true);
     }
 
@@ -298,7 +325,7 @@ contract RetroFundTest is Test {
 
         // Try to declare completion before approval
         vm.prank(proposer);
-        vm.expectRevert("Proposal must be approved before completion");
+        vm.expectRevert("revert: Proposal must be approved before completion");
         retroFund.declareProjectCompletion(proposalId, FINAL_IMAGE_HASH);
     }
 }

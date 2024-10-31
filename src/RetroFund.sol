@@ -30,8 +30,15 @@ contract RetroFund is IRetroFund {
     uint256 private _mainDAOmemberCount;
     uint256 private _subDAOmemberCount;
 
-    // Add at contract level
-    mapping(uint256 => mapping(address => bool)) public hasVoted;
+    // Update the mapping to track voting stages separately
+    mapping(uint256 => mapping(address => mapping(uint8 => bool))) public hasVoted;
+
+    // Add an enum to track voting stages (add at contract level)
+    enum VotingStage {
+        Initial,
+        Progress,
+        Completion
+    }
 
     constructor(address gnosisSafe_, address[] memory mainDAOMembers_, address[] memory subDAOMembers_) {
         _gnosisSafe = gnosisSafe_;
@@ -123,8 +130,8 @@ contract RetroFund is IRetroFund {
         require(!proposal.isRejected, "Proposal already rejected");
 
         // Add double-voting prevention
-        require(!hasVoted[_proposalId][msg.sender], "Already voted");
-        hasVoted[_proposalId][msg.sender] = true;
+        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Initial)], "Already voted");
+        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Initial)] = true;
 
         if (_inFavor) {
             proposal.initialVoting.mainDAOVotesInFavor++;
@@ -150,8 +157,8 @@ contract RetroFund is IRetroFund {
         require(!proposal.isRejected, "Proposal already rejected");
 
         // Add double-voting prevention
-        require(!hasVoted[_proposalId][msg.sender], "Already voted");
-        hasVoted[_proposalId][msg.sender] = true;
+        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Initial)], "Already voted");
+        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Initial)] = true;
 
         if (_inFavor) {
             proposal.initialVoting.subDAOVotesInFavor++;
@@ -177,9 +184,9 @@ contract RetroFund is IRetroFund {
         require(!proposal.progressVoting.mainDAOApproved, "Main DAO already voted on progress");
         require(!proposal.isRejected, "Proposal was rejected");
 
-        // Add double-voting prevention
-        require(!hasVoted[_proposalId][msg.sender], "Already voted");
-        hasVoted[_proposalId][msg.sender] = true;
+        // Update double-voting prevention to use the Progress stage
+        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Progress)], "Already voted");
+        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Progress)] = true;
 
         if (_inFavor) {
             proposal.progressVoting.mainDAOVotesInFavor++;
@@ -204,9 +211,9 @@ contract RetroFund is IRetroFund {
         require(!proposal.progressVoting.subDAOApproved, "SubDAO already voted on progress");
         require(!proposal.isRejected, "Proposal was rejected");
 
-        // Add double-voting prevention
-        require(!hasVoted[_proposalId][msg.sender], "Already voted");
-        hasVoted[_proposalId][msg.sender] = true;
+        // Update double-voting prevention to use the Progress stage
+        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Progress)], "Already voted");
+        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Progress)] = true;
 
         if (_inFavor) {
             proposal.progressVoting.subDAOVotesInFavor++;
@@ -233,8 +240,8 @@ contract RetroFund is IRetroFund {
         require(!proposal.completionVoting.mainDAOApproved, "Main DAO already voted on completion");
 
         // Add double-voting prevention
-        require(!hasVoted[_proposalId][msg.sender], "Already voted");
-        hasVoted[_proposalId][msg.sender] = true;
+        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Completion)], "Already voted");
+        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Completion)] = true;
 
         if (_inFavor) {
             proposal.completionVoting.mainDAOVotesInFavor++;
@@ -260,8 +267,8 @@ contract RetroFund is IRetroFund {
         require(!proposal.completionVoting.subDAOApproved, "SubDAO already voted on completion");
 
         // Add double-voting prevention
-        require(!hasVoted[_proposalId][msg.sender], "Already voted");
-        hasVoted[_proposalId][msg.sender] = true;
+        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Completion)], "Already voted");
+        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Completion)] = true;
 
         if (_inFavor) {
             proposal.completionVoting.subDAOVotesInFavor++;

@@ -59,16 +59,28 @@ interface IRetroFund {
         uint256 midpointTime; // Midpoint check timestamp
         bool isRejected; // Whether proposal was rejected
         bool fundsReleased; // Whether funds were released
+        ProposalMetadata metadata; // Add the metadata struct
         InitialVotingStage initialVoting; // Initial voting stage data
         ProgressVotingStage progressVoting; // Progress voting stage data
         CompletionVotingStage completionVoting; // Completion voting stage data
     }
-    
+
+    // Add a new struct for metadata
+    struct ProposalMetadata {
+        string title;           // Project title
+        string description;     // Detailed project description
+        string[] tags;         // Array of category tags
+        string documentation;   // IPFS hash or URL to detailed documentation
+        string[] externalLinks; // Array of additional relevant links
+    }
+
     // Events
     /// @notice Emitted when a new proposal is submitted
     event ProposalSubmitted(uint256 proposalId, address proposer, uint256 amount, string startImageHash);
     /// @notice Emitted when a vote is cast on a proposal
     event ProposalVoted(uint256 proposalId, address voter, bool inFavor);
+    /// @notice Emitted when a progress image is submitted
+    event ProgressImageSubmitted(uint256 indexed proposalId, string progressImageHash);
     /// @notice Emitted when a project is marked as completed
     event ProposalCompleted(uint256 proposalId, string finalImageHash);
     /// @notice Emitted when funds are released to a proposer
@@ -96,15 +108,36 @@ interface IRetroFund {
     /// @notice Emitted when a proposal is finalized
     event ProposalCompletionFinalized(uint256 indexed proposalId, bool approved);
 
+    event ProposalMetadataAdded(
+        uint256 indexed proposalId,
+        string title,
+        string description,
+        string[] tags,
+        string documentation,
+        string[] externalLinks
+    );
+
     // External Functions
     /// @notice Submit a new proposal
     /// @param startImageHash IPFS hash of the initial project image
     /// @param requestedAmount Amount of funds requested
     /// @param estimatedDays Estimated days until completion
+    /// @param title Project title
+    /// @param description Detailed project description
+    /// @param tags Array of category tags
+    /// @param documentation IPFS hash or URL to detailed documentation
+    /// @param externalLinks Array of additional relevant links
     /// @return proposalId The ID of the newly created proposal
-    function submitProposal(string memory startImageHash, uint256 requestedAmount, uint256 estimatedDays)
-        external
-        returns (uint256);
+    function submitProposal(
+        string memory startImageHash,
+        uint256 requestedAmount,
+        uint256 estimatedDays,
+        string memory title,
+        string memory description,
+        string[] memory tags,
+        string memory documentation,
+        string[] memory externalLinks
+    ) external returns (uint256);
 
     /// @notice Cast a vote from main DAO
     /// @param _proposalId The proposal being voted on

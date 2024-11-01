@@ -12,9 +12,9 @@ pragma solidity ^0.8.18;
 
 import {Test} from "forge-std/Test.sol";
 import {console} from "forge-std/console.sol";
-import {RetroFund} from "../src/RetroFund.sol";
+import {RetroFund} from "../../src/RetroFund.sol";
 import "safe-smart-account/contracts/Safe.sol";
-import {IRetroFund} from "../src/IRetroFund.sol";
+import {IRetroFund} from "../../src/IRetroFund.sol";
 
 contract RetroFundTest is Test {
     RetroFund public retroFund;
@@ -32,6 +32,15 @@ contract RetroFundTest is Test {
     uint256 constant REQUESTED_AMOUNT = 1 ether;
     uint256 constant ESTIMATED_DAYS = 30;
 
+    // Test values for metadata
+    string constant TEST_TITLE = "Test Project";
+    string constant TEST_DESCRIPTION = "Test project description";
+    string constant TEST_DOCUMENTATION = "ipfs://test-docs";
+
+    // Declare these as state variables instead
+    string[] TEST_TAGS;
+    string[] TEST_EXTERNAL_LINKS;
+
     function setUp() public {
         // Setup test addresses for Safe wallet, a proposer, 3 Main DAO members, 2 subDAO members
         gnosisSafe = address(new Safe());
@@ -47,6 +56,14 @@ contract RetroFundTest is Test {
         subDAOMembers[1] = address(0x6);
         subDAOMembers[2] = address(0x7);
 
+        // Initialize the arrays here
+        TEST_TAGS = new string[](2);
+        TEST_TAGS[0] = "test";
+        TEST_TAGS[1] = "demo";
+        
+        TEST_EXTERNAL_LINKS = new string[](1);
+        TEST_EXTERNAL_LINKS[0] = "https://test.com";
+
         // Deploy RetroFund
         retroFund = new RetroFund(gnosisSafe, mainDAOMembers, subDAOMembers);
     }
@@ -56,13 +73,24 @@ contract RetroFundTest is Test {
     // Verifies the proposal details are stored correctly
     function testSubmitProposal() public {
         vm.startPrank(proposer);
-        uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
+        uint256 proposalId = retroFund.submitProposal(
+            START_IMAGE_HASH,
+            REQUESTED_AMOUNT,
+            ESTIMATED_DAYS,
+            TEST_TITLE,
+            TEST_DESCRIPTION,
+            TEST_TAGS,
+            TEST_DOCUMENTATION,
+            TEST_EXTERNAL_LINKS
+        );
         vm.stopPrank();
 
         RetroFund.Proposal memory proposal = retroFund.proposals(proposalId);
         assertEq(proposal.proposer, proposer);
         assertEq(proposal.requestedAmount, REQUESTED_AMOUNT);
         assertEq(proposal.initialVoting.startImageHash, START_IMAGE_HASH);
+        assertEq(proposal.metadata.title, TEST_TITLE);
+        assertEq(proposal.metadata.description, TEST_DESCRIPTION);
     }
 
     // Test main DAO voting
@@ -70,7 +98,16 @@ contract RetroFundTest is Test {
     function testMainDAOVoting() public {
         // Submit proposal
         vm.prank(proposer);
-        uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
+        uint256 proposalId = retroFund.submitProposal(
+            START_IMAGE_HASH,
+            REQUESTED_AMOUNT,
+            ESTIMATED_DAYS,
+            TEST_TITLE,
+            TEST_DESCRIPTION,
+            TEST_TAGS,
+            TEST_DOCUMENTATION,
+            TEST_EXTERNAL_LINKS
+        );
 
         // Vote from main DAO members
         for (uint256 i = 0; i < mainDAOMembers.length; i++) {
@@ -95,7 +132,16 @@ contract RetroFundTest is Test {
     function testSubDAOVoting() public {
         // Submit proposal
         vm.prank(proposer);
-        uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
+        uint256 proposalId = retroFund.submitProposal(
+            START_IMAGE_HASH,
+            REQUESTED_AMOUNT,
+            ESTIMATED_DAYS,
+            TEST_TITLE,
+            TEST_DESCRIPTION,
+            TEST_TAGS,
+            TEST_DOCUMENTATION,
+            TEST_EXTERNAL_LINKS
+        );
 
         // Vote from sub DAO members
         for (uint256 i = 0; i < subDAOMembers.length; i++) {
@@ -129,7 +175,16 @@ contract RetroFundTest is Test {
     function testFinalizeVoting() public {
         // Submit proposal
         vm.prank(proposer);
-        uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
+        uint256 proposalId = retroFund.submitProposal(
+            START_IMAGE_HASH,
+            REQUESTED_AMOUNT,
+            ESTIMATED_DAYS,
+            TEST_TITLE,
+            TEST_DESCRIPTION,
+            TEST_TAGS,
+            TEST_DOCUMENTATION,
+            TEST_EXTERNAL_LINKS
+        );
 
         // Vote from both DAOs
         for (uint256 i = 0; i < mainDAOMembers.length; i++) {
@@ -155,7 +210,16 @@ contract RetroFundTest is Test {
     function testProgressVoting() public {
         // Setup approved proposal
         vm.prank(proposer);
-        uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
+        uint256 proposalId = retroFund.submitProposal(
+            START_IMAGE_HASH,
+            REQUESTED_AMOUNT,
+            ESTIMATED_DAYS,
+            TEST_TITLE,
+            TEST_DESCRIPTION,
+            TEST_TAGS,
+            TEST_DOCUMENTATION,
+            TEST_EXTERNAL_LINKS
+        );
 
         // Initial voting approval
         for (uint256 i = 0; i < mainDAOMembers.length; i++) {
@@ -216,7 +280,16 @@ contract RetroFundTest is Test {
     function testCompletionProcess() public {
         // Setup approved proposal with progress approved
         vm.prank(proposer);
-        uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
+        uint256 proposalId = retroFund.submitProposal(
+            START_IMAGE_HASH,
+            REQUESTED_AMOUNT,
+            ESTIMATED_DAYS,
+            TEST_TITLE,
+            TEST_DESCRIPTION,
+            TEST_TAGS,
+            TEST_DOCUMENTATION,
+            TEST_EXTERNAL_LINKS
+        );
 
         // Initial voting setup
         for (uint256 i = 0; i < mainDAOMembers.length; i++) {
@@ -296,7 +369,16 @@ contract RetroFundTest is Test {
 
     function testFailureUnauthorizedVote() public {
         vm.prank(proposer);
-        uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
+        uint256 proposalId = retroFund.submitProposal(
+            START_IMAGE_HASH,
+            REQUESTED_AMOUNT,
+            ESTIMATED_DAYS,
+            TEST_TITLE,
+            TEST_DESCRIPTION,
+            TEST_TAGS,
+            TEST_DOCUMENTATION,
+            TEST_EXTERNAL_LINKS
+        );
 
         // Try to vote as non-DAO member
         vm.prank(address(0x999));
@@ -307,7 +389,16 @@ contract RetroFundTest is Test {
 
     function testFailureDoubleVote() public {
         vm.prank(proposer);
-        uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
+        uint256 proposalId = retroFund.submitProposal(
+            START_IMAGE_HASH,
+            REQUESTED_AMOUNT,
+            ESTIMATED_DAYS,
+            TEST_TITLE,
+            TEST_DESCRIPTION,
+            TEST_TAGS,
+            TEST_DOCUMENTATION,
+            TEST_EXTERNAL_LINKS
+        );
 
         // Vote once
         vm.prank(mainDAOMembers[0]);
@@ -321,7 +412,16 @@ contract RetroFundTest is Test {
 
     function testFailureEarlyCompletion() public {
         vm.prank(proposer);
-        uint256 proposalId = retroFund.submitProposal(START_IMAGE_HASH, REQUESTED_AMOUNT, ESTIMATED_DAYS);
+        uint256 proposalId = retroFund.submitProposal(
+            START_IMAGE_HASH,
+            REQUESTED_AMOUNT,
+            ESTIMATED_DAYS,
+            TEST_TITLE,
+            TEST_DESCRIPTION,
+            TEST_TAGS,
+            TEST_DOCUMENTATION,
+            TEST_EXTERNAL_LINKS
+        );
 
         // Try to declare completion before approval
         vm.prank(proposer);

@@ -5,6 +5,30 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import "safe-smart-account/contracts/Safe.sol";
 import {IRetroFund} from "./IRetroFund.sol";
 
+// errors 
+error RetroFundInvalidAmount();
+error RetroFundEmptyImageHash();
+error RetroFundInvalidDuration();
+error RetroFundNotProposer();
+error RetroFundNotMainDAOmember();
+error RetroFundNotSubDAOmember();
+error RetroFundProposalNotApproved();
+error RetroFundProposalRejected();
+error RetroFundNotInProgressWindow();
+error RetroFundAlreadyCompleted();
+error RetroFundAlreadyVoted();
+error RetroFundVotingPeriodEnded();
+error RetroFundAlreadyApproved();
+error RetroFundProgressNotApproved();
+error RetroFundNotCompleted();
+error RetroFundNotInCompletionWindow();
+error RetroFundInvalidProposalId();
+error RetroFundNoVotingStage();
+error RetroFundFundsAlreadyReleased();
+error RetroFundFundReleaseFailed();
+error RetroFundEmptyTitle();
+error RetroFundEmptyDescription();
+
 contract RetroFund is IRetroFund {
     uint256 public constant override COOLDOWN_PERIOD = 72 hours;
 
@@ -17,12 +41,12 @@ contract RetroFund is IRetroFund {
     // Update modifiers to use private variables
 
     modifier onlyMainDAO() {
-        require(_mainDAOMembers[msg.sender], "Not part of main DAO");
+        if (!_mainDAOMembers[msg.sender]) revert RetroFundNotMainDAOmember();
         _;
     }
 
     modifier onlySubDAO() {
-        require(_subDAOMembers[msg.sender], "Not part of subDAO");
+        if (!_subDAOMembers[msg.sender]) revert RetroFundNotSubDAOmember();
         _;
     }
 
@@ -39,6 +63,16 @@ contract RetroFund is IRetroFund {
         Progress,
         Completion
     }
+
+    // Change the struct to be stored in storage
+    struct VotingResult {
+        uint256 votesInFavor;
+        uint256 votesAgainst;
+        bool approved;
+    }
+
+    // Add this mapping at contract level
+    mapping(uint256 => mapping(VotingStage => VotingResult)) private votingResults;
 
     constructor(address gnosisSafe_, address[] memory mainDAOMembers_, address[] memory subDAOMembers_) {
         _gnosisSafe = gnosisSafe_;
@@ -59,10 +93,22 @@ contract RetroFund is IRetroFund {
     // uses input params to set the startImageHash and requestedAmount
     // initializes other fields with default values
 
-    function submitProposal(string memory startImageHash, uint256 requestedAmount, uint256 estimatedDays)
-        external
-        returns (uint256)
-    {
+    function submitProposal(
+        string memory startImageHash,
+        uint256 requestedAmount,
+        uint256 estimatedDays,
+        string memory title,
+        string memory description,
+        string[] memory tags,
+        string memory documentation,
+        string[] memory externalLinks
+    ) external returns (uint256) {
+        if (requestedAmount == 0) revert RetroFundInvalidAmount();
+        if (bytes(startImageHash).length == 0) revert RetroFundEmptyImageHash();
+        if (estimatedDays == 0) revert RetroFundInvalidDuration();
+        if (bytes(title).length == 0) revert RetroFundEmptyTitle();
+        if (bytes(description).length == 0) revert RetroFundEmptyDescription();
+
         Proposal storage newProposal = _proposals.push();
 
         // Basic Info
@@ -71,6 +117,13 @@ contract RetroFund is IRetroFund {
         newProposal.submissionTime = block.timestamp;
         newProposal.estimatedCompletionTime = block.timestamp + (estimatedDays * 1 days);
         newProposal.midpointTime = block.timestamp + ((estimatedDays * 1 days) / 2);
+
+        // Metadata
+        newProposal.metadata.title = title;
+        newProposal.metadata.description = description;
+        newProposal.metadata.tags = tags;
+        newProposal.metadata.documentation = documentation;
+        newProposal.metadata.externalLinks = externalLinks;
 
         // Set initial voting stage
         newProposal.initialVoting.startImageHash = startImageHash;
@@ -84,6 +137,15 @@ contract RetroFund is IRetroFund {
         newProposal.completionVoting.completed = false;
 
         emit ProposalSubmitted(_proposals.length - 1, msg.sender, requestedAmount, startImageHash);
+        emit ProposalMetadataAdded(
+            _proposals.length - 1,
+            title,
+            description,
+            tags,
+            documentation,
+            externalLinks
+        );
+        
         return _proposals.length - 1;
     }
 
@@ -106,9 +168,23 @@ contract RetroFund is IRetroFund {
         stage.completed = false;
     }
 
+    // Add a function to submit progress image
+    function submitProgressImage(uint256 _proposalId, string calldata _progressImageHash) external {
+        Proposal storage proposal = _getProposal(_proposalId);
+        if (proposal.proposer != msg.sender) revert RetroFundNotProposer();
+        if (!proposal.initialVoting.stageApproved) revert RetroFundProposalNotApproved();
+        if (proposal.isRejected) revert RetroFundProposalRejected();
+        if (!isInProgressVotingWindow(_proposalId)) revert RetroFundNotInProgressWindow();
+        
+        proposal.progressVoting.progressImageHash = _progressImageHash;
+        proposal.progressVoting.votingStartTime = block.timestamp;
+        
+        emit ProgressImageSubmitted(_proposalId, _progressImageHash);
+    }
+
     // allows a project proposer to mark their project as completed and submit the final image hash
     function declareProjectCompletion(uint256 _proposalId, string calldata _finalImageHash) external {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         require(proposal.proposer == msg.sender, "Only proposer can declare completion");
         require(proposal.initialVoting.stageApproved, "Proposal must be approved before completion");
         require(proposal.progressVoting.stageApproved, "Progress voting must be approved");
@@ -122,173 +198,179 @@ contract RetroFund is IRetroFund {
         emit ProposalCompleted(_proposalId, _finalImageHash);
     }
 
-    // Split voting functions for main DAO and subDAO
+    // Add these internal helper functions
+    function _processVote(
+        uint256 proposalId,
+        address voter,
+        bool inFavor,
+        VotingStage stage,
+        uint256 requiredVotes
+    ) internal {
+        require(!hasVoted[proposalId][voter][uint8(stage)], "Already voted");
+        hasVoted[proposalId][voter][uint8(stage)] = true;
+
+        VotingResult storage votingResult = votingResults[proposalId][stage];
+
+        if (inFavor) {
+            votingResult.votesInFavor++;
+        } else {
+            votingResult.votesAgainst++;
+        }
+
+        uint256 totalVotes = votingResult.votesInFavor + votingResult.votesAgainst;
+        if (totalVotes == requiredVotes) {
+            votingResult.approved = (votingResult.votesInFavor > votingResult.votesAgainst);
+        }
+    }
+
+    // Initial voting functions
     function voteFromMainDAO(uint256 _proposalId, bool _inFavor) external onlyMainDAO {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         require(!isVotingPeriodEnded(_proposalId), "Voting period ended");
         require(!proposal.initialVoting.mainDAOApproved, "Main DAO already approved");
         require(!proposal.isRejected, "Proposal already rejected");
 
-        // Add double-voting prevention
-        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Initial)], "Already voted");
-        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Initial)] = true;
+        _processVote(
+            _proposalId,
+            msg.sender,
+            _inFavor,
+            VotingStage.Initial,
+            _mainDAOmemberCount
+        );
 
-        if (_inFavor) {
-            proposal.initialVoting.mainDAOVotesInFavor++;
-        } else {
-            proposal.initialVoting.mainDAOVotesAgainst++;
-        }
-
-        uint256 totalVotes = proposal.initialVoting.mainDAOVotesInFavor + proposal.initialVoting.mainDAOVotesAgainst;
-
-        // Only set approval after all main DAO members have voted
-        if (totalVotes == _mainDAOmemberCount) {
-            proposal.initialVoting.mainDAOApproved =
-                (proposal.initialVoting.mainDAOVotesInFavor > proposal.initialVoting.mainDAOVotesAgainst);
-        }
+        // Update the proposal's voting data from our results
+        VotingResult storage votingResult = votingResults[_proposalId][VotingStage.Initial];
+        proposal.initialVoting.mainDAOVotesInFavor = votingResult.votesInFavor;
+        proposal.initialVoting.mainDAOVotesAgainst = votingResult.votesAgainst;
+        proposal.initialVoting.mainDAOApproved = votingResult.approved;
 
         emit MainDAOVoted(_proposalId, msg.sender, _inFavor);
     }
 
     function voteFromSubDAO(uint256 _proposalId, bool _inFavor) external onlySubDAO {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         require(!isVotingPeriodEnded(_proposalId), "Voting period ended");
-        require(!proposal.initialVoting.subDAOApproved, "SubDAO already approved");
+        require(!proposal.initialVoting.subDAOApproved, "Sub DAO already approved");
         require(!proposal.isRejected, "Proposal already rejected");
 
-        // Add double-voting prevention
-        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Initial)], "Already voted");
-        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Initial)] = true;
+        _processVote(
+            _proposalId,
+            msg.sender,
+            _inFavor,
+            VotingStage.Initial,
+            _subDAOmemberCount
+        );
 
-        if (_inFavor) {
-            proposal.initialVoting.subDAOVotesInFavor++;
-        } else {
-            proposal.initialVoting.subDAOVotesAgainst++;
-        }
-
-        uint256 totalVotes = proposal.initialVoting.subDAOVotesInFavor + proposal.initialVoting.subDAOVotesAgainst;
-
-        if (totalVotes == _subDAOmemberCount) {
-            proposal.initialVoting.subDAOApproved = 
-                (proposal.initialVoting.subDAOVotesInFavor > proposal.initialVoting.subDAOVotesAgainst);
-        }
+        // Update the proposal's voting data from our results
+        VotingResult storage votingResult = votingResults[_proposalId][VotingStage.Initial];
+        proposal.initialVoting.subDAOVotesInFavor = votingResult.votesInFavor;
+        proposal.initialVoting.subDAOVotesAgainst = votingResult.votesAgainst;
+        proposal.initialVoting.subDAOApproved = votingResult.approved;
 
         emit SubDAOVoted(_proposalId, msg.sender, _inFavor);
     }
 
-    // Update progress voting functions
+    // Progress voting functions
     function voteOnProgressFromMainDAO(uint256 _proposalId, bool _inFavor) external onlyMainDAO {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         require(proposal.initialVoting.stageApproved, "Initial voting must be approved first");
         require(isInProgressVotingWindow(_proposalId), "Not in progress voting window");
         require(!proposal.progressVoting.mainDAOApproved, "Main DAO already voted on progress");
         require(!proposal.isRejected, "Proposal was rejected");
 
-        // Update double-voting prevention to use the Progress stage
-        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Progress)], "Already voted");
-        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Progress)] = true;
+        _processVote(
+            _proposalId,
+            msg.sender,
+            _inFavor,
+            VotingStage.Progress,
+            _mainDAOmemberCount
+        );
 
-        if (_inFavor) {
-            proposal.progressVoting.mainDAOVotesInFavor++;
-        } else {
-            proposal.progressVoting.mainDAOVotesAgainst++;
-        }
-
-        uint256 totalVotes = proposal.progressVoting.mainDAOVotesInFavor + proposal.progressVoting.mainDAOVotesAgainst;
-
-        if (totalVotes == _mainDAOmemberCount) {
-            proposal.progressVoting.mainDAOApproved = 
-                (proposal.progressVoting.mainDAOVotesInFavor > proposal.progressVoting.mainDAOVotesAgainst);
-        }
+        // Update the proposal's voting data from our results
+        VotingResult storage votingResult = votingResults[_proposalId][VotingStage.Progress];
+        proposal.progressVoting.mainDAOVotesInFavor = votingResult.votesInFavor;
+        proposal.progressVoting.mainDAOVotesAgainst = votingResult.votesAgainst;
+        proposal.progressVoting.mainDAOApproved = votingResult.approved;
 
         emit MainDAOProgressVoted(_proposalId, msg.sender, _inFavor);
     }
 
     function voteOnProgressFromSubDAO(uint256 _proposalId, bool _inFavor) external onlySubDAO {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         require(proposal.initialVoting.stageApproved, "Initial voting must be approved first");
         require(isInProgressVotingWindow(_proposalId), "Not in progress voting window");
         require(!proposal.progressVoting.subDAOApproved, "SubDAO already voted on progress");
         require(!proposal.isRejected, "Proposal was rejected");
 
-        // Update double-voting prevention to use the Progress stage
-        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Progress)], "Already voted");
-        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Progress)] = true;
+        _processVote(
+            _proposalId,
+            msg.sender,
+            _inFavor,
+            VotingStage.Progress,
+            _subDAOmemberCount
+        );
 
-        if (_inFavor) {
-            proposal.progressVoting.subDAOVotesInFavor++;
-        } else {
-            proposal.progressVoting.subDAOVotesAgainst++;
-        }
-
-        uint256 totalVotes = proposal.progressVoting.subDAOVotesInFavor + proposal.progressVoting.subDAOVotesAgainst;
-
-        if (totalVotes == _subDAOmemberCount) {
-            proposal.progressVoting.subDAOApproved = 
-                (proposal.progressVoting.subDAOVotesInFavor > proposal.progressVoting.subDAOVotesAgainst);
-        }
+        // Update the proposal's voting data from our results
+        VotingResult storage votingResult = votingResults[_proposalId][VotingStage.Progress];
+        proposal.progressVoting.subDAOVotesInFavor = votingResult.votesInFavor;
+        proposal.progressVoting.subDAOVotesAgainst = votingResult.votesAgainst;
+        proposal.progressVoting.subDAOApproved = votingResult.approved;
 
         emit SubDAOProgressVoted(_proposalId, msg.sender, _inFavor);
     }
 
-    // Similar split for completion voting
+    // Completion voting functions
     function voteOnCompletionFromMainDAO(uint256 _proposalId, bool _inFavor) external onlyMainDAO {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         require(proposal.progressVoting.stageApproved, "Progress voting must be approved first");
         require(proposal.completionVoting.completed, "Project must be marked as completed first");
         require(isInCompletionVotingWindow(_proposalId), "Not in completion voting window");
         require(!proposal.completionVoting.mainDAOApproved, "Main DAO already voted on completion");
 
-        // Add double-voting prevention
-        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Completion)], "Already voted");
-        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Completion)] = true;
+        _processVote(
+            _proposalId,
+            msg.sender,
+            _inFavor,
+            VotingStage.Completion,
+            _mainDAOmemberCount
+        );
 
-        if (_inFavor) {
-            proposal.completionVoting.mainDAOVotesInFavor++;
-        } else {
-            proposal.completionVoting.mainDAOVotesAgainst++;
-        }
-
-        uint256 totalVotes = proposal.completionVoting.mainDAOVotesInFavor + proposal.completionVoting.mainDAOVotesAgainst;
-
-        if (totalVotes == _mainDAOmemberCount) {
-            proposal.completionVoting.mainDAOApproved = 
-                (proposal.completionVoting.mainDAOVotesInFavor > proposal.completionVoting.mainDAOVotesAgainst);
-        }
+        // Update the proposal's voting data from our results
+        VotingResult storage votingResult = votingResults[_proposalId][VotingStage.Completion];
+        proposal.completionVoting.mainDAOVotesInFavor = votingResult.votesInFavor;
+        proposal.completionVoting.mainDAOVotesAgainst = votingResult.votesAgainst;
+        proposal.completionVoting.mainDAOApproved = votingResult.approved;
 
         emit MainDAOCompletionVoted(_proposalId, msg.sender, _inFavor);
     }
 
     function voteOnCompletionFromSubDAO(uint256 _proposalId, bool _inFavor) external onlySubDAO {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         require(proposal.progressVoting.stageApproved, "Progress voting must be approved first");
         require(proposal.completionVoting.completed, "Project must be marked as completed first");
         require(isInCompletionVotingWindow(_proposalId), "Not in completion voting window");
         require(!proposal.completionVoting.subDAOApproved, "SubDAO already voted on completion");
 
-        // Add double-voting prevention
-        require(!hasVoted[_proposalId][msg.sender][uint8(VotingStage.Completion)], "Already voted");
-        hasVoted[_proposalId][msg.sender][uint8(VotingStage.Completion)] = true;
+        _processVote(
+            _proposalId,
+            msg.sender,
+            _inFavor,
+            VotingStage.Completion,
+            _subDAOmemberCount
+        );
 
-        if (_inFavor) {
-            proposal.completionVoting.subDAOVotesInFavor++;
-        } else {
-            proposal.completionVoting.subDAOVotesAgainst++;
-        }
-
-        uint256 totalVotes = proposal.completionVoting.subDAOVotesInFavor + proposal.completionVoting.subDAOVotesAgainst;
-
-        if (totalVotes == _subDAOmemberCount) {
-            proposal.completionVoting.subDAOApproved = 
-                (proposal.completionVoting.subDAOVotesInFavor > proposal.completionVoting.subDAOVotesAgainst);
-        }
+        // Update the proposal's voting data from our results
+        VotingResult storage votingResult = votingResults[_proposalId][VotingStage.Completion];
+        proposal.completionVoting.subDAOVotesInFavor = votingResult.votesInFavor;
+        proposal.completionVoting.subDAOVotesAgainst = votingResult.votesAgainst;
+        proposal.completionVoting.subDAOApproved = votingResult.approved;
 
         emit SubDAOCompletionVoted(_proposalId, msg.sender, _inFavor);
     }
 
     // Add function to finalize voting
     function finalizeVoting(uint256 _proposalId) external {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         
         // Initial voting stage
         if (!proposal.initialVoting.stageApproved && !proposal.isRejected) {
@@ -346,7 +428,7 @@ contract RetroFund is IRetroFund {
 
     // Releases the funds to a project proposer after their proposal has been approved and completed
     function releaseFunds(uint256 _proposalId) external {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         require(proposal.initialVoting.stageApproved, "Proposal not approved");
         require(!proposal.isRejected, "Proposal was rejected");
         require(proposal.completionVoting.completed, "Project must be completed");
@@ -372,20 +454,20 @@ contract RetroFund is IRetroFund {
 
     // Add function to check if voting period has ended
     function isVotingPeriodEnded(uint256 _proposalId) public view returns (bool) {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         return block.timestamp >= proposal.submissionTime + COOLDOWN_PERIOD;
     }
 
     // External wrapper functions
     function isInProgressVotingWindow(uint256 _proposalId) public view returns (bool) {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         uint256 windowBuffer = 3 days;
         return block.timestamp >= proposal.midpointTime - windowBuffer
             && block.timestamp <= proposal.midpointTime + windowBuffer;
     }
 
     function isInCompletionVotingWindow(uint256 _proposalId) public view returns (bool) {
-        Proposal storage proposal = _proposals[_proposalId];
+        Proposal storage proposal = _getProposal(_proposalId);
         uint256 windowBuffer = 3 days;
         return block.timestamp >= proposal.estimatedCompletionTime - windowBuffer
             && block.timestamp <= proposal.estimatedCompletionTime + windowBuffer;
@@ -407,4 +489,10 @@ contract RetroFund is IRetroFund {
     function subDAOMembers(address member) external view override returns (bool) {
         return _subDAOMembers[member];
     }
+
+    function _getProposal(uint256 _proposalId) internal view returns (Proposal storage) {
+        if (_proposalId >= _proposals.length) revert RetroFundInvalidProposalId();
+        return _proposals[_proposalId];
+    }
+
 }

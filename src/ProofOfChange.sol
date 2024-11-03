@@ -3,33 +3,37 @@ pragma solidity ^0.8.18;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import "safe-smart-account/contracts/Safe.sol";
-import {IRetroFund} from "./IRetroFund.sol";
+import {IProofOfChange} from "./Interfaces/IProofOfChange.sol";
+import {IEAS} from "@ethereum-attestation-service/eas-contracts/contracts/IEAS.sol";
+import {SchemaResolver} from "@ethereum-attestation-service/eas-contracts/contracts/SchemaResolver.sol";
 
 // errors 
-error RetroFundInvalidAmount();
-error RetroFundEmptyImageHash();
-error RetroFundInvalidDuration();
-error RetroFundNotProposer();
-error RetroFundNotMainDAOmember();
-error RetroFundNotSubDAOmember();
-error RetroFundProposalNotApproved();
-error RetroFundProposalRejected();
-error RetroFundNotInProgressWindow();
-error RetroFundAlreadyCompleted();
-error RetroFundAlreadyVoted();
-error RetroFundVotingPeriodEnded();
-error RetroFundAlreadyApproved();
-error RetroFundProgressNotApproved();
-error RetroFundNotCompleted();
-error RetroFundNotInCompletionWindow();
-error RetroFundInvalidProposalId();
-error RetroFundNoVotingStage();
-error RetroFundFundsAlreadyReleased();
-error RetroFundFundReleaseFailed();
-error RetroFundEmptyTitle();
-error RetroFundEmptyDescription();
+error ProofOfChangeInvalidAmount();
+error ProofOfChangeEmptyImageHash();
+error ProofOfChangeInvalidDuration();
+error ProofOfChangeNotProposer();
+error ProofOfChangeNotMainDAOmember();
+error ProofOfChangeNotSubDAOmember();
+error ProofOfChangeProposalNotApproved();
+error ProofOfChangeProposalRejected();
+error ProofOfChangeNotInProgressWindow();
+error ProofOfChangeAlreadyCompleted();
+error ProofOfChangeAlreadyVoted();
+error ProofOfChangeVotingPeriodEnded();
+error ProofOfChangeAlreadyApproved();
+error ProofOfChangeProgressNotApproved();
+error ProofOfChangeNotCompleted();
+error ProofOfChangeNotInCompletionWindow();
+error ProofOfChangeInvalidProposalId();
+error ProofOfChangeNoVotingStage();
+error ProofOfChangeFundsAlreadyReleased();
+error ProofOfChangeFundReleaseFailed();
+error ProofOfChangeEmptyTitle();
+error ProofOfChangeEmptyDescription();
+error ProofOfChangeInvalidAttestation();
+error ProofOfChangeInvalidLocation();
 
-contract RetroFund is IRetroFund {
+contract ProofOfChange is IProofOfChange, SchemaResolver {
     uint256 public constant override COOLDOWN_PERIOD = 72 hours;
 
     // Change from public to private to avoid getter function conflict
@@ -41,12 +45,12 @@ contract RetroFund is IRetroFund {
     // Update modifiers to use private variables
 
     modifier onlyMainDAO() {
-        if (!_mainDAOMembers[msg.sender]) revert RetroFundNotMainDAOmember();
+        if (!_mainDAOMembers[msg.sender]) revert ProofOfChangeNotMainDAOmember();
         _;
     }
 
     modifier onlySubDAO() {
-        if (!_subDAOMembers[msg.sender]) revert RetroFundNotSubDAOmember();
+        if (!_subDAOMembers[msg.sender]) revert ProofOfChangeNotSubDAOmember();
         _;
     }
 
@@ -74,7 +78,16 @@ contract RetroFund is IRetroFund {
     // Add this mapping at contract level
     mapping(uint256 => mapping(VotingStage => VotingResult)) private votingResults;
 
-    constructor(address gnosisSafe_, address[] memory mainDAOMembers_, address[] memory subDAOMembers_) {
+    // Add new constants
+    bytes32 public constant LOCATION_SCHEMA = 0xba4171c92572b1e4f241d044c32cdf083be9fd946b8766977558ca6378c824e2;
+    IEAS private immutable eas;
+
+    constructor(
+        address gnosisSafe_,
+        address[] memory mainDAOMembers_,
+        address[] memory subDAOMembers_,
+        address easRegistry
+    ) SchemaResolver(easRegistry) {
         _gnosisSafe = gnosisSafe_;
         _mainDAOmemberCount = mainDAOMembers_.length;
         _subDAOmemberCount = subDAOMembers_.length;
@@ -84,6 +97,7 @@ contract RetroFund is IRetroFund {
         for (uint256 i = 0; i < subDAOMembers_.length; i++) {
             _subDAOMembers[subDAOMembers_[i]] = true;
         }
+        eas = IEAS(easRegistry);
     }
 
     // allows users to submit new proposals to the system, which can then be voted on, completed, and potentially funded
@@ -101,13 +115,19 @@ contract RetroFund is IRetroFund {
         string memory description,
         string[] memory tags,
         string memory documentation,
-        string[] memory externalLinks
+        string[] memory externalLinks,
+        bytes32 locationAttestationUID
     ) external returns (uint256) {
-        if (requestedAmount == 0) revert RetroFundInvalidAmount();
-        if (bytes(startImageHash).length == 0) revert RetroFundEmptyImageHash();
-        if (estimatedDays == 0) revert RetroFundInvalidDuration();
-        if (bytes(title).length == 0) revert RetroFundEmptyTitle();
-        if (bytes(description).length == 0) revert RetroFundEmptyDescription();
+        if (requestedAmount == 0) revert ProofOfChangeInvalidAmount();
+        if (bytes(startImageHash).length == 0) revert ProofOfChangeEmptyImageHash();
+        if (estimatedDays == 0) revert ProofOfChangeInvalidDuration();
+        if (bytes(title).length == 0) revert ProofOfChangeEmptyTitle();
+        if (bytes(description).length == 0) revert ProofOfChangeEmptyDescription();
+
+        // Validate location attestation
+        IEAS.Attestation memory attestation = eas.getAttestation(locationAttestationUID);
+        if (attestation.schema != LOCATION_SCHEMA) revert ProofOfChangeInvalidAttestation();
+        if (!_validateLocationProof(attestation.data)) revert ProofOfChangeInvalidLocation();
 
         Proposal storage newProposal = _proposals.push();
 
@@ -135,6 +155,9 @@ contract RetroFund is IRetroFund {
 
         // Additional completion-specific fields
         newProposal.completionVoting.completed = false;
+
+        // Store attestation UID
+        newProposal.initialVoting.locationAttestationUID = locationAttestationUID;
 
         emit ProposalSubmitted(_proposals.length - 1, msg.sender, requestedAmount, startImageHash);
         emit ProposalMetadataAdded(
@@ -171,10 +194,10 @@ contract RetroFund is IRetroFund {
     // Add a function to submit progress image
     function submitProgressImage(uint256 _proposalId, string calldata _progressImageHash) external {
         Proposal storage proposal = _getProposal(_proposalId);
-        if (proposal.proposer != msg.sender) revert RetroFundNotProposer();
-        if (!proposal.initialVoting.stageApproved) revert RetroFundProposalNotApproved();
-        if (proposal.isRejected) revert RetroFundProposalRejected();
-        if (!isInProgressVotingWindow(_proposalId)) revert RetroFundNotInProgressWindow();
+        if (proposal.proposer != msg.sender) revert ProofOfChangeNotProposer();
+        if (!proposal.initialVoting.stageApproved) revert ProofOfChangeProposalNotApproved();
+        if (proposal.isRejected) revert ProofOfChangeProposalRejected();
+        if (!isInProgressVotingWindow(_proposalId)) revert ProofOfChangeNotInProgressWindow();
         
         proposal.progressVoting.progressImageHash = _progressImageHash;
         proposal.progressVoting.votingStartTime = block.timestamp;
@@ -369,6 +392,8 @@ contract RetroFund is IRetroFund {
     }
 
     // Add function to finalize voting
+    /////////////////////////////////////// move each stage into separate function
+
     function finalizeVoting(uint256 _proposalId) external {
         Proposal storage proposal = _getProposal(_proposalId);
         
@@ -491,8 +516,52 @@ contract RetroFund is IRetroFund {
     }
 
     function _getProposal(uint256 _proposalId) internal view returns (Proposal storage) {
-        if (_proposalId >= _proposals.length) revert RetroFundInvalidProposalId();
+        if (_proposalId >= _proposals.length) revert ProofOfChangeInvalidProposalId();
         return _proposals[_proposalId];
     }
 
+    // Add validation functions
+    function _validateLocationProof(bytes memory data) internal pure returns (bool) {
+        // Decode attestation data
+        (
+            uint256 eventTimestamp,
+            string memory srs,
+            string memory locationType,
+            string memory location,
+            string[] memory mediaTypes,
+            string[] memory mediaData,
+            string[] memory recipeTypes,
+            bytes[] memory recipePayload,
+            string memory memo
+        ) = abi.decode(
+            data,
+            (uint256, string, string, string, string[], string[], string[], bytes[], string)
+        );
+        
+        // Validate SRS is EPSG:4326
+        if (keccak256(bytes(srs)) != keccak256(bytes("EPSG:4326"))) {
+            return false;
+        }
+        
+        // Validate location type
+        if (keccak256(bytes(locationType)) != keccak256(bytes("DecimalDegrees<string>"))) {
+            return false;
+        }
+        
+        // Ensure required media exists
+        if (mediaTypes.length == 0 || mediaData.length == 0) {
+            return false;
+        }
+        
+        return true;
+    }
+
+    // Implement SchemaResolver's isValid function
+    function isValid(
+        bytes32 attestationUID,
+        address attester,
+        bytes memory data
+    ) external view override returns (bool) {
+        return _validateLocationProof(data);
+    }
 }

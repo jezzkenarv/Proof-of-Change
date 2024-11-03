@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
-/// @title IRetroFund Interface
-/// @notice Interface for the RetroFund contract which manages proposal submissions and voting
-/// @dev This interface defines all external functions and events for the RetroFund contract
-interface IRetroFund {
+/// @title IProofOfChange Interface
+/// @notice Interface for the ProofOfChange contract which manages proposal submissions and voting
+/// @dev This interface defines all external functions and events for the ProofOfChange contract
+interface IProofOfChange {
     // Structs
     /// @notice Stores voting data for the initial stage of a proposal
     /// @dev Used when a proposal is first submitted
     struct InitialVotingStage {
         string startImageHash; // IPFS hash of the initial project image
+        bytes32 locationAttestationUID; // Add this line
         uint256 mainDAOVotesInFavor; // Number of main DAO votes supporting
         uint256 mainDAOVotesAgainst; // Number of main DAO votes against
         bool mainDAOApproved; // Whether main DAO has approved

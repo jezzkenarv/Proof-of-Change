@@ -5,117 +5,57 @@ pragma solidity ^0.8.18;
 /// @notice Interface for the ProofOfChange contract which manages proposal submissions and voting
 /// @dev This interface defines all external functions and events for the ProofOfChange contract
 interface IProofOfChange {
-    // Structs
-    /// @notice Stores voting data for the initial stage of a proposal
-    /// @dev Used when a proposal is first submitted
-    struct InitialVotingStage {
-        string startImageHash; // IPFS hash of the initial project image
-        bytes32 locationAttestationUID; // Add this line
-        uint256 mainDAOVotesInFavor; // Number of main DAO votes supporting
-        uint256 mainDAOVotesAgainst; // Number of main DAO votes against
-        bool mainDAOApproved; // Whether main DAO has approved
-        uint256 subDAOVotesInFavor; // Number of sub DAO votes supporting
-        uint256 subDAOVotesAgainst; // Number of sub DAO votes against
-        bool subDAOApproved; // Whether sub DAO has approved
-        uint256 votingStartTime; // Timestamp when voting began
-        bool stageApproved; // Whether this stage was approved
+    // Add new enums
+    enum MemberType {
+        NonMember,
+        SubDAOMember,
+        DAOMember
+    }
+    
+    enum VoteType {
+        Initial,
+        Progress,
+        Completion
+    }
+    
+    enum VoteResult {
+        Pending,
+        Approved,
+        Rejected
     }
 
-    /// @notice Stores voting data for the progress stage of a proposal
-    /// @dev Used at project midpoint to verify progress
-    struct ProgressVotingStage {
-        string progressImageHash; // IPFS hash of the progress update image
-        uint256 mainDAOVotesInFavor; // Number of main DAO votes supporting
-        uint256 mainDAOVotesAgainst; // Number of main DAO votes against
-        bool mainDAOApproved; // Whether main DAO has approved
-        uint256 subDAOVotesInFavor; // Number of sub DAO votes supporting
-        uint256 subDAOVotesAgainst; // Number of sub DAO votes against
-        bool subDAOApproved; // Whether sub DAO has approved
-        uint256 votingStartTime; // Timestamp when voting began
-        bool stageApproved; // Whether this stage was approved
+    // Add new structs
+    struct Media {
+        string[] mediaTypes;
+        string[] mediaData;
+        uint256 timestamp;
+        string description;
+        bool verified;
     }
 
-    /// @notice Stores voting data for the completion stage of a proposal
-    /// @dev Used when project is marked as complete
-    struct CompletionVotingStage {
-        string finalImageHash; // IPFS hash of the final project image
-        uint256 mainDAOVotesInFavor; // Number of main DAO votes supporting
-        uint256 mainDAOVotesAgainst; // Number of main DAO votes against
-        bool mainDAOApproved; // Whether main DAO has approved
-        uint256 subDAOVotesInFavor; // Number of sub DAO votes supporting
-        uint256 subDAOVotesAgainst; // Number of sub DAO votes against
-        bool subDAOApproved; // Whether sub DAO has approved
-        uint256 votingStartTime; // Timestamp when voting began
-        bool stageApproved; // Whether this stage was approved
-        bool completed; // Whether project is marked complete
-    }
-
-    /// @notice Main proposal struct containing all proposal data
-    /// @dev Tracks the entire lifecycle of a proposal
-    struct Proposal {
-        address payable proposer; // Address that submitted the proposal
-        uint256 requestedAmount; // Amount of funds requested
-        uint256 submissionTime; // When proposal was submitted
-        uint256 estimatedCompletionTime; // Expected completion timestamp
-        uint256 midpointTime; // Midpoint check timestamp
-        bool isRejected; // Whether proposal was rejected
-        bool fundsReleased; // Whether funds were released
-        ProposalMetadata metadata; // Add the metadata struct
-        InitialVotingStage initialVoting; // Initial voting stage data
-        ProgressVotingStage progressVoting; // Progress voting stage data
-        CompletionVotingStage completionVoting; // Completion voting stage data
-    }
-
-    // Add a new struct for metadata
-    struct ProposalMetadata {
-        string title;           // Project title
-        string description;     // Detailed project description
-        string[] tags;         // Array of category tags
-        string documentation;   // IPFS hash or URL to detailed documentation
-        string[] externalLinks; // Array of additional relevant links
-    }
-
-    // Events
-    /// @notice Emitted when a new proposal is submitted
-    event ProposalSubmitted(uint256 proposalId, address proposer, uint256 amount, string startImageHash);
-    /// @notice Emitted when a vote is cast on a proposal
-    event ProposalVoted(uint256 proposalId, address voter, bool inFavor);
-    /// @notice Emitted when a progress image is submitted
-    event ProgressImageSubmitted(uint256 indexed proposalId, string progressImageHash);
-    /// @notice Emitted when a project is marked as completed
-    event ProposalCompleted(uint256 proposalId, string finalImageHash);
-    /// @notice Emitted when funds are released to a proposer
-    event FundsReleased(uint256 proposalId, address proposer, uint256 amount);
-    /// @notice Emitted when a completion vote is cast
-    event CompletionVoted(uint256 proposalId, address voter, bool inFavor);
-    /// @notice Emitted when completion is approved
-    event CompletionApproved(uint256 proposalId);
-    /// @notice Emitted when main DAO casts a vote
-    event MainDAOVoted(uint256 proposalId, address voter, bool inFavor);
-    /// @notice Emitted when sub DAO casts a vote
-    event SubDAOVoted(uint256 proposalId, address voter, bool inFavor);
-    /// @notice Emitted when main DAO votes on completion
-    event MainDAOCompletionVoted(uint256 proposalId, address voter, bool inFavor);
-    /// @notice Emitted when sub DAO votes on completion
-    event SubDAOCompletionVoted(uint256 proposalId, address voter, bool inFavor);
-    /// @notice Emitted when a proposal is finalized
-    event ProposalFinalized(uint256 indexed proposalId, bool approved);
-    /// @notice Emitted when main DAO votes on progress
-    event MainDAOProgressVoted(uint256 proposalId, address voter, bool inFavor);
-    /// @notice Emitted when sub DAO votes on progress
-    event SubDAOProgressVoted(uint256 proposalId, address voter, bool inFavor);
-    /// @notice Emitted when a proposal is finalized
-    event ProposalProgressFinalized(uint256 indexed proposalId, bool approved);
-    /// @notice Emitted when a proposal is finalized
-    event ProposalCompletionFinalized(uint256 indexed proposalId, bool approved);
-
-    event ProposalMetadataAdded(
-        uint256 indexed proposalId,
-        string title,
-        string description,
-        string[] tags,
-        string documentation,
-        string[] externalLinks
+    // Add new events
+    event VoteCast(bytes32 indexed attestationUID, address voter, MemberType memberType);
+    event AttestationApproved(bytes32 indexed attestationUID);
+    event MemberAdded(address member, MemberType memberType, uint256 regionId);
+    event VotingInitialized(bytes32 indexed attestationUID, uint256 votingEnds);
+    event VoteFinalized(bytes32 indexed attestationUID, VoteResult result);
+    event ProjectCreated(
+        bytes32 indexed projectId,
+        address indexed proposer,
+        string name,
+        uint256 regionId
+    );
+    event PhaseAttestationCreated(
+        bytes32 indexed projectId,
+        VoteType phase,
+        bytes32 attestationUID
+    );
+    event MediaAdded(
+        bytes32 indexed projectId,
+        VoteType phase,
+        string[] mediaTypes,
+        string[] mediaData,
+        uint256 timestamp
     );
 
     // External Functions
@@ -171,6 +111,103 @@ interface IProofOfChange {
     /// @notice Release funds to the proposer
     function releaseFunds(uint256 _proposalId) external;
 
+    /// @notice Vote on a proposal
+    /// @param attestationUID The attestation UID
+    /// @param regionId The region ID
+    /// @param approve Whether the vote is in favor
+    function vote(bytes32 attestationUID, uint256 regionId, bool approve) external;
+
+    /// @notice Initialize voting
+    /// @param attestationUID The attestation UID
+    /// @param daoVotesNeeded The number of DAO votes needed
+    /// @param subDaoVotesNeeded The number of sub DAO votes needed
+    function initializeVoting(bytes32 attestationUID, uint256 daoVotesNeeded, uint256 subDaoVotesNeeded) external;
+
+    /// @notice Check if a proposal is approved
+    /// @param attestationUID The attestation UID
+    /// @return bool Whether the proposal is approved
+    function isApproved(bytes32 attestationUID) external view returns (bool);
+
+    /// @notice Add a DAO member
+    /// @param member The member address
+    function addDAOMember(address member) external;
+
+    /// @notice Add a sub DAO member
+    /// @param member The member address
+    /// @param regionId The region ID
+    function addSubDAOMember(address member, uint256 regionId) external;
+
+    /// @notice Finalize a vote
+    /// @param attestationUID The attestation UID
+    function finalizeVote(bytes32 attestationUID) external;
+
+    /// @notice Create a project
+    /// @param name The project name
+    /// @param description The project description
+    /// @param location The project location
+    /// @param regionId The region ID
+    /// @param initialMediaTypes The initial media types
+    /// @param initialMediaData The initial media data
+    /// @param mediaDescription The media description
+    /// @return projectId The project ID
+    function createProject(
+        string calldata name,
+        string calldata description,
+        string calldata location,
+        uint256 regionId,
+        string[] calldata initialMediaTypes,
+        string[] calldata initialMediaData,
+        string calldata mediaDescription
+    ) external returns (bytes32);
+
+    /// @notice Create a phase attestation
+    /// @param projectId The project ID
+    /// @param phase The phase
+    /// @return attestationUID The attestation UID
+    function createPhaseAttestation(bytes32 projectId, VoteType phase) external returns (bytes32);
+
+    /// @notice Advance to the next phase
+    /// @param projectId The project ID
+    function advanceToNextPhase(bytes32 projectId) external;
+
+    /// @notice Get project details
+    /// @param projectId The project ID
+    /// @return name The project name
+    /// @return description The project description
+    /// @return location The project location
+    /// @return regionId The region ID
+    /// @return proposer The proposer address
+    /// @return currentPhase The current phase
+    /// @return currentAttestationUID The current attestation UID
+    function getProjectDetails(bytes32 projectId) external view returns (
+        string memory name,
+        string memory description,
+        string memory location,
+        uint256 regionId,
+        address proposer,
+        VoteType currentPhase,
+        bytes32 currentAttestationUID
+    );
+
+    /// @notice Get user projects
+    /// @param user The user address
+    /// @return projectIds The project IDs
+    function getUserProjects(address user) external view returns (bytes32[] memory);
+
+    /// @notice Add phase media
+    /// @param projectId The project ID
+    /// @param phase The phase
+    /// @param mediaTypes The media types
+    /// @param mediaData The media data
+    /// @param mediaDescription The media description
+    function addPhaseMedia(
+        bytes32 projectId,
+        VoteType phase,
+        string[] calldata mediaTypes,
+        string[] calldata mediaData,
+        string calldata mediaDescription
+    ) external;
+
     // View Functions
     /// @notice Check if voting period has ended
     /// @return bool Whether the voting period has ended
@@ -188,8 +225,8 @@ interface IProofOfChange {
     /// @notice Get the cooldown period duration
     function COOLDOWN_PERIOD() external view returns (uint256);
 
-    /// @notice Get proposal details by ID
-    function proposals(uint256) external view returns (Proposal memory);
+    // /// @notice Get proposal details by ID
+    // function proposals(uint256) external view returns (Proposal memory);
 
     /// @notice Get the Gnosis Safe address
     function gnosisSafe() external view returns (address);
@@ -202,4 +239,11 @@ interface IProofOfChange {
 
     // Add the hasVoted mapping to the interface
     function hasVoted(uint256 proposalId, address voter, uint8 stage) external view returns (bool);
+
+    // Add constants
+    /// @notice Get the location schema
+    function LOCATION_SCHEMA() external view returns (bytes32);
+
+    /// @notice Get the voting period
+    function VOTING_PERIOD() external view returns (uint256);
 }

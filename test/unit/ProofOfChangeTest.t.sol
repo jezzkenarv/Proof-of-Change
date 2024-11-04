@@ -9,9 +9,9 @@ pragma solidity ^0.8.18;
 
 import {Test} from "forge-std/Test.sol";
 import {console} from "forge-std/console.sol";
-import {RetroFund} from "../../src/RetroFund.sol";
+import {ProofOfChange} from "../../src/ProofOfChange.sol";
 import "safe-smart-account/contracts/Safe.sol";
-import {IRetroFund} from "../../src/Interfaces/IRetroFund.sol";
+import {IProofOfChange} from "../../src/Interfaces/IProofOfChange.sol";
 
 contract RetroFundUnitTest is Test {
     // RetroFund public retroFund;

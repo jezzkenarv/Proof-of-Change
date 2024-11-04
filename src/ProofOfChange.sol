@@ -25,9 +25,13 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         string location;
         uint256 createdAt;
         uint256 expectedDuration;
+        uint256 requestedFunds;
+        uint256 startDate;
+        bool fundsReleased;
         mapping(IProofOfChange.VoteType => Media) media;
         mapping(IProofOfChange.VoteType => bytes32) attestationUIDs;
         mapping(IProofOfChange.VoteType => PhaseProgress) phaseProgress;
+        mapping(IProofOfChange.VoteType => uint256) phaseAllocations;
     }
 
     struct PauseVoting {
@@ -86,6 +90,8 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     event OperationQueued(bytes32 indexed operationId);
     event EmergencyAdminAdded(address indexed admin);
     event EmergencyAdminRemoved(address indexed admin);
+
+    mapping(bytes32 => mapping(IProofOfChange.VoteType => bool)) public phaseFundsReleased;
 
     constructor(address easRegistry, address[] memory initialDAOMembers) SchemaResolver(IEAS(easRegistry)) {
         eas = IEAS(easRegistry);
@@ -402,6 +408,14 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         if (data.mediaTypes.length == 0 || data.mediaTypes.length != data.mediaData.length) {
             revert IProofOfChange.InvalidMediaData();
         }
+
+        // Validate fund allocation and duration
+        if (!_validateFundAllocation(data.phaseAllocations, data.requestedFunds)) {
+            revert InvalidFundAllocation();
+        }
+        if (data.expectedDuration < 1 days || data.expectedDuration > 365 days) {
+            revert InvalidDuration();
+        }
         
         bytes32 projectId = keccak256(
             abi.encodePacked(
@@ -411,13 +425,16 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             )
         );
 
-        // Create project first
+        // Create project with funding data
         _createProjectData(
             projectId, 
             data.name, 
             data.description, 
             data.location, 
-            data.regionId
+            data.regionId,
+            data.expectedDuration,
+            data.requestedFunds,
+            data.phaseAllocations
         );
 
         // Initialize phase progress for Initial phase
@@ -460,7 +477,10 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         string calldata name,
         string calldata description,
         string calldata location,
-        uint256 regionId
+        uint256 regionId,
+        uint256 expectedDuration,
+        uint256 requestedFunds,
+        uint256[] calldata phaseAllocations
     ) private {
         Project storage newProject = projects[projectId];
         newProject.name = name;
@@ -469,6 +489,21 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         newProject.regionId = regionId;
         newProject.proposer = msg.sender;
         newProject.currentPhase = IProofOfChange.VoteType.Initial;
+        newProject.expectedDuration = expectedDuration;
+        newProject.requestedFunds = requestedFunds;
+        newProject.startDate = block.timestamp;
+        newProject.fundsReleased = false;
+
+        // Store phase allocations
+        for (uint256 i = 0; i < phaseAllocations.length; i++) {
+            newProject.phaseAllocations[IProofOfChange.VoteType(i)] = phaseAllocations[i];
+        }
+
+        emit ProjectFundingInitialized(
+            projectId, 
+            requestedFunds, 
+            phaseAllocations
+        );
     }
 
     // Helper function to add initial media
@@ -895,6 +930,77 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             }
         }
         return false;
+    }
+
+    function _validateFundAllocation(uint256[] memory phaseAllocations, uint256 totalFunds) 
+        internal 
+        pure 
+        returns (bool) 
+    {
+        if (phaseAllocations.length != 3) return false;
+        
+        uint256 total = 0;
+        for (uint256 i = 0; i < phaseAllocations.length; i++) {
+            total += phaseAllocations[i];
+        }
+        
+        return total == totalFunds;
+    }
+
+    function releasePhaseFunds(bytes32 projectId, IProofOfChange.VoteType phase) 
+        external 
+        nonReentrant 
+        whenNotPaused(IProofOfChange.FunctionGroup.FundManagement) 
+    {
+        Project storage project = projects[projectId];
+        
+        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
+        if (project.status != ProjectStatus.Completed) revert IProofOfChange.ProjectNotComplete();
+        
+        bytes32 attestationUID = project.attestationUIDs[phase];
+        if (!_isApproved(attestationUID)) revert IProofOfChange.PhaseNotApproved();
+        if (phaseFundsReleased[projectId][phase]) revert IProofOfChange.FundsAlreadyReleased();
+        
+        uint256 allocation = project.phaseAllocations[phase];
+        phaseFundsReleased[projectId][phase] = true;
+        
+        (bool success, ) = project.proposer.call{value: allocation}("");
+        require(success, "Fund transfer failed");
+        
+        emit PhaseFundsReleased(
+            projectId,
+            phase,
+            project.proposer,
+            allocation,
+            block.timestamp
+        );
+    }
+
+    function getProjectFinancials(bytes32 projectId) 
+        external 
+        view 
+        returns (
+            uint256 totalRequested,
+            uint256 initialPhaseAmount,
+            uint256 progressPhaseAmount,
+            uint256 completionPhaseAmount,
+            bool[] memory phasesFunded
+        ) 
+    {
+        Project storage project = projects[projectId];
+        bool[] memory funded = new bool[](3);
+        
+        funded[0] = phaseFundsReleased[projectId][IProofOfChange.VoteType.Initial];
+        funded[1] = phaseFundsReleased[projectId][IProofOfChange.VoteType.Progress];
+        funded[2] = phaseFundsReleased[projectId][IProofOfChange.VoteType.Completion];
+        
+        return (
+            project.requestedFunds,
+            project.phaseAllocations[IProofOfChange.VoteType.Initial],
+            project.phaseAllocations[IProofOfChange.VoteType.Progress],
+            project.phaseAllocations[IProofOfChange.VoteType.Completion],
+            funded
+        );
     }
 
 }

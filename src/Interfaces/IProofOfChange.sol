@@ -26,7 +26,8 @@ interface IProofOfChange {
         ProjectCreation,
         ProjectProgress,
         Membership,
-        ProjectManagement
+        ProjectManagement,
+        FundManagement
     }
 
     enum ProjectStatus {
@@ -93,6 +94,21 @@ interface IProofOfChange {
         bool completed
     );
 
+    // Add new events
+    event ProjectFundingInitialized(
+        bytes32 indexed projectId,
+        uint256 totalAmount,
+        uint256[] phaseAllocations
+    );
+
+    event PhaseFundsReleased(
+        bytes32 indexed projectId,
+        VoteType phase,
+        address indexed recipient,
+        uint256 amount,
+        uint256 timestamp
+    );
+
     // Errors
     error FunctionCurrentlyPaused(FunctionGroup group, uint256 pauseEnds);
     error UnauthorizedDAO();
@@ -122,6 +138,10 @@ interface IProofOfChange {
     error ProjectNotCompletable();
     error InvalidMilestone();
     error OperationTimelocked(bytes32 operationId);
+    error InvalidFundAllocation();
+    error ProjectNotComplete();
+    error PhaseNotApproved();
+    error FundsAlreadyReleased();
 
     // Core functions
     function vote(bytes32 attestationUID, uint256 regionId, bool approve) external;
@@ -184,6 +204,9 @@ interface IProofOfChange {
         string[] mediaTypes;
         string[] mediaData;
         string mediaDescription;
+        uint256 expectedDuration;
+        uint256 requestedFunds;
+        uint256[] phaseAllocations;
     }
 
     // Membership management functions with access control notes

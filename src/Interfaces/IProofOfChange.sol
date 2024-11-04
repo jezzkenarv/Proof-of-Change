@@ -25,7 +25,29 @@ interface IProofOfChange {
         Voting,
         ProjectCreation,
         ProjectProgress,
-        Membership
+        Membership,
+        ProjectManagement
+    }
+
+    enum ProjectStatus {
+        Active,
+        Completed,
+        Archived,
+        Frozen
+    }
+
+    enum MediaActionType {
+        Added,
+        Updated,
+        Verified
+    }
+
+    enum ProjectActionType {
+        Created,
+        StatusUpdated,
+        Frozen,
+        PhaseUpdated,
+        Reassigned
     }
 
     // Events
@@ -33,7 +55,6 @@ interface IProofOfChange {
     event AttestationApproved(bytes32 indexed attestationUID);
     event VotingInitialized(bytes32 indexed attestationUID, uint256 votingEnds);
     event VoteFinalized(bytes32 indexed attestationUID, VoteResult result);
-    event ProjectCreated(bytes32 indexed projectId, address indexed proposer, string name, uint256 regionId);
     event PhaseAttestationCreated(bytes32 indexed projectId, VoteType phase, bytes32 attestationUID);
     event PauseProposed(FunctionGroup indexed group, uint256 duration, bytes32 proposalId);
     event PauseVoteCast(bytes32 indexed proposalId, address indexed voter);
@@ -44,10 +65,27 @@ interface IProofOfChange {
     event PhaseForceUpdated(bytes32 indexed projectId, VoteType newPhase, string reason);
     event ProjectReassigned(bytes32 indexed projectId, address indexed newProposer, address[] newValidators);
     event VotesUpdated(bytes32 indexed projectId, bytes32[] attestationUIDs);
-    event MediaAdded(bytes32 indexed projectId, VoteType phase, string[] mediaTypes, string[] mediaData, uint256 timestamp);
-    event MemberAdded(address member, MemberType memberType, uint256 regionId);
-    event MemberRemoved(address member, MemberType previousType);
-    event MemberUpdated(address member, MemberType previousType, MemberType newType, uint256 regionId);
+    event MediaAction(
+        bytes32 indexed projectId,
+        VoteType indexed phase,
+        string[] mediaTypes,
+        string[] mediaData,
+        uint256 timestamp,
+        MediaActionType actionType
+    );
+    event MemberAction(
+        address indexed member,
+        MemberType memberType,
+        MemberType previousType,
+        uint256 regionId,
+        bool isRemoval
+    );
+    event ProjectAction(
+        bytes32 indexed projectId,
+        address indexed actor,
+        ProjectActionType actionType,
+        string details
+    );
 
     // Errors
     error FunctionCurrentlyPaused(FunctionGroup group, uint256 pauseEnds);
@@ -74,6 +112,8 @@ interface IProofOfChange {
     error MemberNotFound();
     error UnauthorizedOwner();
     error UnauthorizedAdmin();
+    error InvalidStatusTransition();
+    error ProjectNotCompletable();
 
     // Core functions
     function vote(bytes32 attestationUID, uint256 regionId, bool approve) external;
@@ -154,4 +194,8 @@ interface IProofOfChange {
     /// @notice Updates a member's type and region
     /// @dev Should be restricted to contract owner/admin
     function updateMember(address member, MemberType newType, uint256 regionId) external;
+
+    // Add the function declarations in the interface
+    function updateProjectStatus(bytes32 projectId, ProjectStatus newStatus) external;
+    function getProjectStatus(bytes32 projectId) external view returns (ProjectStatus);
 }

@@ -5,23 +5,26 @@ import {IEAS, Attestation, AttestationRequest, AttestationRequestData} from "lib
 import {SchemaResolver} from "lib/eas-contracts/contracts/resolver/SchemaResolver.sol";
 import {IProofOfChange} from "./Interfaces/IProofOfChange.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 
 contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
+    using Strings for uint256;
+
     // Constants
     bytes32 public constant LOCATION_SCHEMA = 0xba4171c92572b1e4f241d044c32cdf083be9fd946b8766977558ca6378c824e2;
     
     // Structs
     struct Project {
+        address proposer;
+        IProofOfChange.VoteType currentPhase;
+        ProjectStatus status;
+        bool hasInitialMedia;
+        uint256 regionId;
         string name;
         string description;
         string location;
-        uint256 regionId;
-        address proposer;
-        IProofOfChange.VoteType currentPhase;
         mapping(IProofOfChange.VoteType => Media) media;
         mapping(IProofOfChange.VoteType => bytes32) attestationUIDs;
-        bool hasInitialMedia;
-        bool isActive;
     }
 
     struct PauseVoting {
@@ -178,12 +181,18 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     function _freezeProject(bytes32 projectId, bytes calldata data) internal {
         uint256 duration = abi.decode(data, (uint256));
         
-        // Validate duration (between 1 hour and 30 days)
         if (duration < 1 hours || duration > 30 days) revert IProofOfChange.InvalidDuration();
         
+        Project storage project = projects[projectId];
+        project.status = ProjectStatus.Frozen;
         projectFrozenUntil[projectId] = block.timestamp + duration;
         
-        emit IProofOfChange.ProjectFrozen(projectId, duration, msg.sender);
+        emit ProjectAction(
+            projectId, 
+            msg.sender, 
+            ProjectActionType.Frozen, 
+            string(abi.encodePacked("Project frozen for ", duration.toString(), " seconds"))
+        );
     }
 
     function _forceUpdatePhase(bytes32 projectId, bytes calldata data) internal {
@@ -195,7 +204,12 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         // Update the project phase
         project.currentPhase = newPhase;
         
-        emit IProofOfChange.PhaseForceUpdated(projectId, newPhase, reason);
+        emit ProjectAction(
+            projectId, 
+            msg.sender, 
+            ProjectActionType.PhaseUpdated, 
+            reason
+        );
     }
 
     function setVotingPeriod(uint256 newVotingPeriod) external {
@@ -264,7 +278,13 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         emit IProofOfChange.VotingInitialized(attestationUID, voteData.votingEnds);
     }
 
+    // Keep the external version for other contracts to use
     function isApproved(bytes32 attestationUID) external view returns (bool) {
+        return _isApproved(attestationUID);
+    }
+
+    // Add internal version for use within the contract
+    function _isApproved(bytes32 attestationUID) internal view returns (bool) {
         return attestationVotes[attestationUID].result == IProofOfChange.VoteResult.Approved;
     }
 
@@ -280,14 +300,26 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     function addDAOMember(address member) external {
         // Add access control as needed
         members[member] = IProofOfChange.MemberType.DAOMember;
-        emit IProofOfChange.MemberAdded(member, IProofOfChange.MemberType.DAOMember, 0);
+        emit MemberAction(
+            member,
+            IProofOfChange.MemberType.DAOMember,  // new type
+            IProofOfChange.MemberType.NonMember,  // previous type
+            0,  // no region for DAO members
+            false  // not a removal
+        );
     }
 
     function addSubDAOMember(address member, uint256 regionId) external {
         // Add access control as needed
         members[member] = IProofOfChange.MemberType.SubDAOMember;
         regionSubDAOMembers[regionId][member] = true;
-        emit IProofOfChange.MemberAdded(member, IProofOfChange.MemberType.SubDAOMember, regionId);
+        emit MemberAction(
+            member,
+            IProofOfChange.MemberType.SubDAOMember,  // new type
+            IProofOfChange.MemberType.NonMember,  // previous type
+            regionId,
+            false  // not a removal
+        );
     }
 
     function finalizeVote(bytes32 attestationUID) external nonReentrant {
@@ -341,7 +373,12 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
         // Store project ID in user's projects and emit event
         userProjects[msg.sender].push(projectId);
-        emit IProofOfChange.ProjectCreated(projectId, msg.sender, data.name, data.regionId);
+        emit ProjectAction(
+            projectId, 
+            msg.sender, 
+            ProjectActionType.Created, 
+            data.name
+        );
 
         // Create initial attestation
         createPhaseAttestation(projectId, IProofOfChange.VoteType.Initial);
@@ -506,6 +543,15 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             description: mediaDescription,
             verified: false
         });
+
+        emit MediaAction(
+            projectId,
+            phase,
+            mediaTypes,
+            mediaData,
+            block.timestamp,
+            MediaActionType.Added
+        );
     }
 
     function onAttest(
@@ -538,7 +584,13 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             }
         }
         
-        emit IProofOfChange.MemberRemoved(member, previousType);
+        emit MemberAction(
+            member,
+            IProofOfChange.MemberType.NonMember,  // new type
+            previousType,  // previous type
+            0,  // no region for removal
+            true  // is removal
+        );
     }
 
     function updateMember(
@@ -564,7 +616,13 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             }
         }
         
-        emit IProofOfChange.MemberUpdated(member, previousType, newType, regionId);
+        emit MemberAction(
+            member,
+            newType,          // new type
+            previousType,     // previous type
+            regionId,
+            false            // not a removal
+        );
     }
 
     function _reassignProject(bytes32 projectId, bytes calldata data) internal {
@@ -578,7 +636,12 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         // Update user projects mapping
         userProjects[newProposer].push(projectId);
         
-        emit IProofOfChange.ProjectReassigned(projectId, newProposer, newValidators);
+        emit ProjectAction(
+            projectId, 
+            msg.sender, 
+            ProjectActionType.Reassigned, 
+            "Project reassigned"
+        );
     }
 
     function _updateVoteResults(bytes32 projectId, bytes calldata data) internal {
@@ -603,4 +666,45 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         
         emit IProofOfChange.VotesUpdated(projectId, attestationUIDs);
     }
+
+    function updateProjectStatus(bytes32 projectId, ProjectStatus newStatus) external 
+        whenNotPaused(IProofOfChange.FunctionGroup.ProjectManagement) 
+    {
+        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) 
+            revert IProofOfChange.UnauthorizedDAO();
+        
+        Project storage project = projects[projectId];
+        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
+        
+        // Validate status transitions
+        if (newStatus == ProjectStatus.Archived) {
+            if (project.status != ProjectStatus.Completed) 
+                revert IProofOfChange.InvalidStatusTransition();
+        } else if (newStatus == ProjectStatus.Completed) {
+            if (project.currentPhase != IProofOfChange.VoteType.Completion || 
+                !_isApproved(project.attestationUIDs[IProofOfChange.VoteType.Completion])) 
+                revert IProofOfChange.ProjectNotCompletable();
+        }
+
+        ProjectStatus oldStatus = project.status;
+        project.status = newStatus;
+        
+        emit ProjectAction(
+            projectId, 
+            msg.sender, 
+            ProjectActionType.StatusUpdated, 
+            string(abi.encodePacked(
+                "Status changed from ", 
+                uint256(oldStatus).toString(), 
+                " to ", 
+                uint256(newStatus).toString()
+            ))
+        );
+    }
+
+    function getProjectStatus(bytes32 projectId) external view returns (ProjectStatus) {
+        return projects[projectId].status;
+    }
+
+
 }

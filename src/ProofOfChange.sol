@@ -23,8 +23,11 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         string name;
         string description;
         string location;
+        uint256 createdAt;
+        uint256 expectedDuration;
         mapping(IProofOfChange.VoteType => Media) media;
         mapping(IProofOfChange.VoteType => bytes32) attestationUIDs;
+        mapping(IProofOfChange.VoteType => PhaseProgress) phaseProgress;
     }
 
     struct PauseVoting {
@@ -40,6 +43,15 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         bool isPaused;
         uint256 pauseEnds;
         bool requiresVoting;
+    }
+
+    struct PhaseProgress {
+        uint256 startTime;
+        uint256 targetEndTime;
+        bool requiresMedia;
+        bool isComplete;
+        string[] milestones;
+        mapping(string => bool) completedMilestones;
     }
 
     // State variables
@@ -62,11 +74,26 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     // Add frozen projects tracking
     mapping(bytes32 => uint256) public projectFrozenUntil;
 
+    // Add new constants and state variables
+    uint256 public constant TIMELOCK_PERIOD = 24 hours;
+    uint256 public constant EMERGENCY_THRESHOLD = 2;
+    
+    mapping(bytes32 => uint256) public pendingOperations;
+    mapping(bytes32 => mapping(address => bool)) public emergencyApprovals;
+    address[] public emergencyAdmins;
+
+    // Add new events
+    event OperationQueued(bytes32 indexed operationId);
+    event EmergencyAdminAdded(address indexed admin);
+    event EmergencyAdminRemoved(address indexed admin);
+
     constructor(address easRegistry, address[] memory initialDAOMembers) SchemaResolver(IEAS(easRegistry)) {
         eas = IEAS(easRegistry);
         minimumPauseVotes = (initialDAOMembers.length * 2) / 3; // 66% of initial DAO members
         for (uint256 i = 0; i < initialDAOMembers.length; i++) {
             members[initialDAOMembers[i]] = IProofOfChange.MemberType.DAOMember;
+            // Make initial DAO members emergency admins
+            emergencyAdmins.push(initialDAOMembers[i]);
         }
     }
 
@@ -152,11 +179,14 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     }
 
     // Emergency actions that can be performed during pause
+    // should change to enum for gas efficiency
     function emergencyProjectAction(
         bytes32 projectId, 
         string calldata action,
         bytes calldata data
-    ) external nonReentrant {
+    ) external nonReentrant requiresEmergencyConsensus(
+        keccak256(abi.encodePacked("emergencyAction", projectId, action))
+    ) {
         if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert IProofOfChange.UnauthorizedDAO();
         Project storage project = projects[projectId];
         if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
@@ -289,11 +319,38 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     }
 
     function isValid(
-        bytes32 /* attestationUID */,
-        address /* attester */,
-        bytes memory /* data */
-    ) external pure returns (bool) {
-        // Basic schema validation
+        // bytes32 attestationUID,
+        address attester,
+        bytes memory data
+    ) external view returns (bool) {
+        // Decode the attestation data
+        (
+            bytes32 projectId,
+            string memory name,
+            string memory description,
+            string memory location,
+            uint256 regionId,
+            IProofOfChange.VoteType phase
+        ) = abi.decode(data, (bytes32, string, string, string, uint256, IProofOfChange.VoteType));
+
+        // Validate project exists
+        Project storage project = projects[projectId];
+        if (project.proposer == address(0)) return false;
+
+        // Validate attester is the project proposer
+        if (attester != project.proposer) return false;
+
+        // Validate project phase matches
+        if (phase != project.currentPhase) return false;
+
+        // Validate non-empty strings
+        if (bytes(name).length == 0 || 
+            bytes(description).length == 0 || 
+            bytes(location).length == 0) return false;
+
+        // Validate region ID exists (assuming valid regions are > 0)
+        if (regionId == 0) return false;
+
         return true;
     }
 
@@ -361,6 +418,17 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             data.description, 
             data.location, 
             data.regionId
+        );
+
+        // Initialize phase progress for Initial phase
+        string[] memory initialMilestones = new string[](1);
+        initialMilestones[0] = "Submit initial documentation";
+        _initializePhaseProgress(
+            projectId,
+            IProofOfChange.VoteType.Initial,
+            7 days, // Example duration
+            true,   // Requires media
+            initialMilestones
         );
 
         // Add media separately
@@ -568,7 +636,9 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         return true;
     }
 
-    function removeDAOMember(address member) external {
+    function removeDAOMember(address member) external timeLocked(
+        keccak256(abi.encodePacked("removeDAOMember", member))
+    ) {
         if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert IProofOfChange.UnauthorizedDAO();
         if (members[member] == IProofOfChange.MemberType.NonMember) revert IProofOfChange.MemberNotFound();
         
@@ -706,5 +776,125 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         return projects[projectId].status;
     }
 
+    function _initializePhaseProgress(
+        bytes32 projectId,
+        IProofOfChange.VoteType phase,
+        uint256 duration,
+        bool requiresMedia,
+        string[] memory milestones
+    ) internal {
+        Project storage project = projects[projectId];
+        PhaseProgress storage progress = project.phaseProgress[phase];
+        
+        progress.startTime = block.timestamp;
+        progress.targetEndTime = block.timestamp + duration;
+        progress.requiresMedia = requiresMedia;
+        progress.isComplete = false;
+        progress.milestones = milestones;
+    }
+
+    function isProjectDelayed(bytes32 projectId) external view returns (bool) {
+        Project storage project = projects[projectId];
+        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
+        
+        PhaseProgress storage progress = project.phaseProgress[project.currentPhase];
+        return block.timestamp > progress.targetEndTime && !progress.isComplete;
+    }
+
+    function updateMilestone(
+        bytes32 projectId,
+        string calldata milestone,
+        bool completed
+    ) external nonReentrant whenNotPaused(IProofOfChange.FunctionGroup.ProjectManagement) {
+        Project storage project = projects[projectId];
+        if (project.proposer != msg.sender) revert IProofOfChange.UnauthorizedProposer();
+        
+        PhaseProgress storage progress = project.phaseProgress[project.currentPhase];
+        bool milestoneExists = false;
+        
+        for (uint i = 0; i < progress.milestones.length; i++) {
+            if (keccak256(bytes(progress.milestones[i])) == keccak256(bytes(milestone))) {
+                milestoneExists = true;
+                break;
+            }
+        }
+        
+        if (!milestoneExists) revert IProofOfChange.InvalidMilestone();
+        
+        progress.completedMilestones[milestone] = completed;
+        
+        emit MilestoneUpdated(projectId, project.currentPhase, milestone, completed);
+    }
+
+    function getPhaseProgress(
+        bytes32 projectId,
+        IProofOfChange.VoteType phase
+    ) external view returns (
+        uint256 startTime,
+        uint256 targetEndTime,
+        bool requiresMedia,
+        bool isComplete,
+        string[] memory milestones,
+        uint256 completedMilestonesCount
+    ) {
+        Project storage project = projects[projectId];
+        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
+        
+        PhaseProgress storage progress = project.phaseProgress[phase];
+        
+        uint256 completed = 0;
+        for (uint i = 0; i < progress.milestones.length; i++) {
+            if (progress.completedMilestones[progress.milestones[i]]) {
+                completed++;
+            }
+        }
+        
+        return (
+            progress.startTime,
+            progress.targetEndTime,
+            progress.requiresMedia,
+            progress.isComplete,
+            progress.milestones,
+            completed
+        );
+    }
+
+    // Add new modifier for timelocked operations
+    modifier timeLocked(bytes32 operationId) {
+        if (pendingOperations[operationId] == 0) {
+            pendingOperations[operationId] = block.timestamp + TIMELOCK_PERIOD;
+            emit OperationQueued(operationId);
+            revert IProofOfChange.OperationTimelocked(operationId);
+        }
+        require(block.timestamp >= pendingOperations[operationId], "Timelock active");
+        delete pendingOperations[operationId];
+        _;
+    }
+
+    // Add new modifier for emergency operations
+    modifier requiresEmergencyConsensus(bytes32 operationId) {
+        require(isEmergencyAdmin(msg.sender), "Not emergency admin");
+        emergencyApprovals[operationId][msg.sender] = true;
+        
+        uint256 approvalCount = 0;
+        for (uint256 i = 0; i < emergencyAdmins.length; i++) {
+            if (emergencyApprovals[operationId][emergencyAdmins[i]]) {
+                approvalCount++;
+            }
+        }
+        
+        require(approvalCount >= EMERGENCY_THRESHOLD, "Insufficient approvals");
+        _;
+    }
+
+    // Add helper function to check emergency admin status
+    function isEmergencyAdmin(address account) public view returns (bool) {
+        for (uint256 i = 0; i < emergencyAdmins.length; i++) {
+            if (emergencyAdmins[i] == account) {
+                return true;
+            }
+        }
+        return false;
+    }
 
 }

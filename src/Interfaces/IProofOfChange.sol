@@ -86,6 +86,12 @@ interface IProofOfChange {
         ProjectActionType actionType,
         string details
     );
+    event MilestoneUpdated(
+        bytes32 indexed projectId,
+        VoteType indexed phase,
+        string milestone,
+        bool completed
+    );
 
     // Errors
     error FunctionCurrentlyPaused(FunctionGroup group, uint256 pauseEnds);
@@ -114,6 +120,8 @@ interface IProofOfChange {
     error UnauthorizedAdmin();
     error InvalidStatusTransition();
     error ProjectNotCompletable();
+    error InvalidMilestone();
+    error OperationTimelocked(bytes32 operationId);
 
     // Core functions
     function vote(bytes32 attestationUID, uint256 regionId, bool approve) external;
@@ -198,4 +206,25 @@ interface IProofOfChange {
     // Add the function declarations in the interface
     function updateProjectStatus(bytes32 projectId, ProjectStatus newStatus) external;
     function getProjectStatus(bytes32 projectId) external view returns (ProjectStatus);
+
+    // Add new function declarations
+    function updateMilestone(
+        bytes32 projectId,
+        string calldata milestone,
+        bool completed
+    ) external;
+
+    function isProjectDelayed(bytes32 projectId) external view returns (bool);
+
+    function getPhaseProgress(
+        bytes32 projectId,
+        VoteType phase
+    ) external view returns (
+        uint256 startTime,
+        uint256 targetEndTime,
+        bool requiresMedia,
+        bool isComplete,
+        string[] memory milestones,
+        uint256 completedMilestonesCount
+    );
 }

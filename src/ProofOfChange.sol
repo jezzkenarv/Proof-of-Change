@@ -103,6 +103,15 @@ contract ProofOfChange is SchemaResolver {
     );
     event MemberRemoved(address member, MemberType previousType);
     event MemberUpdated(address member, MemberType previousType, MemberType newType, uint256 regionId);
+    event PauseProposed(FunctionGroup indexed group, uint256 duration, bytes32 proposalId);
+    event PauseVoteCast(bytes32 indexed proposalId, address indexed voter);
+    event FunctionGroupPaused(FunctionGroup indexed group, uint256 pauseEnds);
+    event FunctionGroupUnpaused(FunctionGroup indexed group);
+    event EmergencyActionExecuted(address indexed executor, bytes32 indexed projectId, string action);
+    event ProjectFrozen(bytes32 indexed projectId, uint256 duration, address indexed executor);
+    event PhaseForceUpdated(bytes32 indexed projectId, VoteType newPhase, string reason);
+    event ProjectReassigned(bytes32 indexed projectId, address indexed newProposer, address[] newValidators);
+    event VotesUpdated(bytes32 indexed projectId, bytes32[] attestationUIDs);
     
     // Errors
     error InvalidAttestation();
@@ -114,7 +123,6 @@ contract ProofOfChange is SchemaResolver {
     error VotingPeriodEnded();
     error VotingPeriodNotEnded();
     error VoteAlreadyFinalized();
-    error InvalidPhase();
     error UnauthorizedProposer();
     error ProjectNotFound();
     error NoInitialMedia(); 
@@ -122,15 +130,191 @@ contract ProofOfChange is SchemaResolver {
     error InvalidMediaData();
     error MediaTypeMismatch();
     error MemberNotFound();
+    error AlreadyVotedForPause();
+    error PauseProposalNotFound();
+    error PauseProposalExpired();
+    error PauseVotingNotRequired();
+    error InvalidPauseDuration();
+    error FunctionCurrentlyPaused(FunctionGroup group, uint256 pauseEnds);
+    error InvalidEmergencyAction();
+    error InvalidDataFormat();
+    error InvalidDuration();
+    error InvalidAddresses();
+    error InvalidVoteData();
+    error InvalidPhase();
     
     // Cool-down period duration
     uint256 public votingPeriod = 7 days; // Default value
     
+    struct PauseVoting {
+        uint256 votesRequired;
+        uint256 votesReceived;
+        uint256 duration;
+        uint256 proposedAt;
+        mapping(address => bool) hasVoted;
+        bool executed;
+    }
+
+    struct PauseConfig {
+        bool isPaused;
+        uint256 pauseEnds;
+        bool requiresVoting;
+    }
+
+    // Granular pause configuration for different function groups
+    enum FunctionGroup {
+        Voting,          // vote, finalizeVote
+        ProjectCreation, // createProject, addPhaseMedia
+        ProjectProgress, // createPhaseAttestation, advanceToNextPhase
+        Membership      // addDAOMember, removeDAOMember, updateMember
+    }
+
+    mapping(FunctionGroup => PauseConfig) public pauseConfigs;
+    mapping(bytes32 => PauseVoting) public pauseVotes;
+    uint256 public constant EMERGENCY_PAUSE_DURATION = 3 days;
+    uint256 public constant STANDARD_PAUSE_DURATION = 14 days;
+    uint256 public immutable minimumPauseVotes;
+
+    // Add frozen projects tracking
+    mapping(bytes32 => uint256) public projectFrozenUntil;
+
     constructor(address easRegistry, address[] memory initialDAOMembers) SchemaResolver(IEAS(easRegistry)) {
         eas = IEAS(easRegistry);
+        minimumPauseVotes = (initialDAOMembers.length * 2) / 3; // 66% of initial DAO members
         for (uint256 i = 0; i < initialDAOMembers.length; i++) {
             members[initialDAOMembers[i]] = MemberType.DAOMember;
         }
+    }
+
+    // Modified modifier to check specific function group
+    modifier whenNotPaused(FunctionGroup group) {
+        PauseConfig storage config = pauseConfigs[group];
+        if (config.isPaused) {
+            if (config.pauseEnds != 0 && block.timestamp >= config.pauseEnds) {
+                _unpause(group);
+            } else {
+                revert FunctionCurrentlyPaused(group, config.pauseEnds);
+            }
+        }
+        _;
+    }
+
+    // New functions for pause management
+    function proposePause(FunctionGroup group, uint256 duration) external returns (bytes32) {
+        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+        if (duration > STANDARD_PAUSE_DURATION) revert InvalidPauseDuration();
+
+        bytes32 proposalId = keccak256(abi.encodePacked(group, duration, block.timestamp));
+        PauseVoting storage voting = pauseVotes[proposalId];
+        voting.votesRequired = minimumPauseVotes;
+        voting.duration = duration;
+        voting.proposedAt = block.timestamp;
+
+        emit PauseProposed(group, duration, proposalId);
+        
+        // First vote from proposer
+        _castPauseVote(proposalId);
+        
+        return proposalId;
+    }
+
+    function emergencyPause(FunctionGroup group) external {
+        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+        
+        PauseConfig storage config = pauseConfigs[group];
+        config.isPaused = true;
+        config.pauseEnds = block.timestamp + EMERGENCY_PAUSE_DURATION;
+        config.requiresVoting = false;
+        
+        emit FunctionGroupPaused(group, config.pauseEnds);
+    }
+
+    function castPauseVote(bytes32 proposalId) external {
+        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+        _castPauseVote(proposalId);
+    }
+
+    function _castPauseVote(bytes32 proposalId) internal {
+        PauseVoting storage voting = pauseVotes[proposalId];
+        if (voting.proposedAt == 0) revert PauseProposalNotFound();
+        if (voting.hasVoted[msg.sender]) revert AlreadyVotedForPause();
+        if (block.timestamp > voting.proposedAt + 1 days) revert PauseProposalExpired();
+
+        voting.hasVoted[msg.sender] = true;
+        voting.votesReceived++;
+
+        emit PauseVoteCast(proposalId, msg.sender);
+
+        if (voting.votesReceived >= voting.votesRequired && !voting.executed) {
+            voting.executed = true;
+            FunctionGroup group = FunctionGroup(uint8(uint256(proposalId) % 4)); // Extract group from proposalId
+            
+            PauseConfig storage config = pauseConfigs[group];
+            config.isPaused = true;
+            config.pauseEnds = block.timestamp + voting.duration;
+            config.requiresVoting = true;
+            
+            emit FunctionGroupPaused(group, config.pauseEnds);
+        }
+    }
+
+    function _unpause(FunctionGroup group) internal {
+        PauseConfig storage config = pauseConfigs[group];
+        config.isPaused = false;
+        config.pauseEnds = 0;
+        config.requiresVoting = false;
+        
+        emit FunctionGroupUnpaused(group);
+    }
+
+    // Emergency actions that can be performed during pause
+    function emergencyProjectAction(
+        bytes32 projectId, 
+        string calldata action,
+        bytes calldata data
+    ) external {
+        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+        Project storage project = projects[projectId];
+        if (project.proposer == address(0)) revert ProjectNotFound();
+
+        bytes32 actionHash = keccak256(bytes(action));
+        
+        if (actionHash == keccak256(bytes("freeze"))) {
+            _freezeProject(projectId, data);
+        } else if (actionHash == keccak256(bytes("updatePhase"))) {
+            _forceUpdatePhase(projectId, data);
+        } else if (actionHash == keccak256(bytes("reassignProject"))) {
+            _reassignProject(projectId, data);
+        } else if (actionHash == keccak256(bytes("updateVotes"))) {
+            _updateVoteResults(projectId, data);
+        } else {
+            revert InvalidEmergencyAction();
+        }
+
+        emit EmergencyActionExecuted(msg.sender, projectId, action);
+    }
+
+    function _freezeProject(bytes32 projectId, bytes calldata data) internal {
+        uint256 duration = abi.decode(data, (uint256));
+        
+        // Validate duration (between 1 hour and 30 days)
+        if (duration < 1 hours || duration > 30 days) revert InvalidDuration();
+        
+        projectFrozenUntil[projectId] = block.timestamp + duration;
+        
+        emit ProjectFrozen(projectId, duration, msg.sender);
+    }
+
+    function _forceUpdatePhase(bytes32 projectId, bytes calldata data) internal {
+        (VoteType newPhase, string memory reason) = abi.decode(data, (VoteType, string));
+        
+        Project storage project = projects[projectId];
+        if (newPhase == project.currentPhase) revert InvalidPhase();
+        
+        // Update the project phase
+        project.currentPhase = newPhase;
+        
+        emit PhaseForceUpdated(projectId, newPhase, reason);
     }
 
     function setVotingPeriod(uint256 newVotingPeriod) external {
@@ -138,7 +322,10 @@ contract ProofOfChange is SchemaResolver {
         votingPeriod = newVotingPeriod;
     }
 
-    function vote(bytes32 attestationUID, uint256 regionId, bool approve) external {
+    function vote(bytes32 attestationUID, uint256 regionId, bool approve) 
+        external 
+        whenNotPaused(FunctionGroup.Voting) 
+    {
         MemberType memberType = members[msg.sender];
         if (memberType == MemberType.NonMember) revert UnauthorizedDAO();
         
@@ -493,5 +680,42 @@ contract ProofOfChange is SchemaResolver {
         }
         
         emit MemberUpdated(member, previousType, newType, regionId);
+    }
+
+    function _reassignProject(bytes32 projectId, bytes calldata data) internal {
+        (address newProposer, address[] memory newValidators) = abi.decode(data, (address, address[]));
+        
+        if (newProposer == address(0) || newValidators.length == 0) revert InvalidAddresses();
+        
+        Project storage project = projects[projectId];
+        project.proposer = newProposer;
+        
+        // Update user projects mapping
+        userProjects[newProposer].push(projectId);
+        
+        emit ProjectReassigned(projectId, newProposer, newValidators);
+    }
+
+    function _updateVoteResults(bytes32 projectId, bytes calldata data) internal {
+        bytes32[] memory attestationUIDs = abi.decode(data, (bytes32[]));
+        
+        Project storage project = projects[projectId];
+        if (project.proposer == address(0)) revert ProjectNotFound();
+        
+        // Update vote results for each attestation
+        for (uint256 i = 0; i < attestationUIDs.length; i++) {
+            Vote storage voteData = attestationVotes[attestationUIDs[i]];
+            if (voteData.votingEnds == 0) revert InvalidVoteData();
+            
+            // Reset vote data
+            voteData.daoVotesFor = 0;
+            voteData.daoVotesAgainst = 0;
+            voteData.subDaoVotesFor = 0;
+            voteData.subDaoVotesAgainst = 0;
+            voteData.isFinalized = false;
+            voteData.result = VoteResult.Pending;
+        }
+        
+        emit VotesUpdated(projectId, attestationUIDs);
     }
 }

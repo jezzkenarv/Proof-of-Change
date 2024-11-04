@@ -121,13 +121,18 @@ contract ProofOfChange is SchemaResolver {
     error MediaTypeMismatch();
     
     // Cool-down period duration
-    uint256 public constant VOTING_PERIOD = 7 days;
+    uint256 public votingPeriod = 7 days; // Default value
     
     constructor(address easRegistry, address[] memory initialDAOMembers) SchemaResolver(IEAS(easRegistry)) {
         eas = IEAS(easRegistry);
         for (uint256 i = 0; i < initialDAOMembers.length; i++) {
             members[initialDAOMembers[i]] = MemberType.DAOMember;
         }
+    }
+
+    function setVotingPeriod(uint256 newVotingPeriod) external {
+        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+        votingPeriod = newVotingPeriod;
     }
 
     function vote(bytes32 attestationUID, uint256 regionId, bool approve) external {
@@ -180,7 +185,7 @@ contract ProofOfChange is SchemaResolver {
         
         voteData.daoVotesRequired = daoVotesNeeded;
         voteData.subDaoVotesRequired = subDaoVotesNeeded;
-        voteData.votingEnds = block.timestamp + VOTING_PERIOD;
+        voteData.votingEnds = block.timestamp + votingPeriod;
         emit VotingInitialized(attestationUID, voteData.votingEnds);
     }
 

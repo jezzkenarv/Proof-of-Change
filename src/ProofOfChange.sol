@@ -101,6 +101,8 @@ contract ProofOfChange is SchemaResolver {
         string[] mediaData,
         uint256 timestamp
     );
+    event MemberRemoved(address member, MemberType previousType);
+    event MemberUpdated(address member, MemberType previousType, MemberType newType, uint256 regionId);
     
     // Errors
     error InvalidAttestation();
@@ -119,6 +121,7 @@ contract ProofOfChange is SchemaResolver {
     error MediaAlreadyExists();
     error InvalidMediaData();
     error MediaTypeMismatch();
+    error MemberNotFound();
     
     // Cool-down period duration
     uint256 public votingPeriod = 7 days; // Default value
@@ -445,5 +448,50 @@ contract ProofOfChange is SchemaResolver {
         uint256 /* value */
     ) internal virtual override returns (bool) {
         return true;
+    }
+
+    function removeDAOMember(address member) external {
+        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+        if (members[member] == MemberType.NonMember) revert MemberNotFound();
+        
+        MemberType previousType = members[member];
+        members[member] = MemberType.NonMember;
+        
+        // If they were a subDAO member, remove region access
+        if (previousType == MemberType.SubDAOMember) {
+            for (uint256 i = 0; i < 100; i++) { // Assuming reasonable number of regions
+                if (regionSubDAOMembers[i][member]) {
+                    regionSubDAOMembers[i][member] = false;
+                }
+            }
+        }
+        
+        emit MemberRemoved(member, previousType);
+    }
+
+    function updateMember(
+        address member,
+        MemberType newType,
+        uint256 regionId
+    ) external {
+        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+        if (members[member] == MemberType.NonMember) revert MemberNotFound();
+        
+        MemberType previousType = members[member];
+        members[member] = newType;
+        
+        // Handle subDAO region membership
+        if (newType == MemberType.SubDAOMember) {
+            regionSubDAOMembers[regionId][member] = true;
+        } else if (previousType == MemberType.SubDAOMember) {
+            // Remove all region access if no longer a subDAO member
+            for (uint256 i = 0; i < 100; i++) {
+                if (regionSubDAOMembers[i][member]) {
+                    regionSubDAOMembers[i][member] = false;
+                }
+            }
+        }
+        
+        emit MemberUpdated(member, previousType, newType, regionId);
     }
 }

@@ -3,149 +3,27 @@ pragma solidity ^0.8.18;
 
 import {IEAS, Attestation, AttestationRequest, AttestationRequestData} from "lib/eas-contracts/contracts/IEAS.sol";
 import {SchemaResolver} from "lib/eas-contracts/contracts/resolver/SchemaResolver.sol";
+import {IProofOfChange} from "./Interfaces/IProofOfChange.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract ProofOfChange is SchemaResolver {
+contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     // Constants
     bytes32 public constant LOCATION_SCHEMA = 0xba4171c92572b1e4f241d044c32cdf083be9fd946b8766977558ca6378c824e2;
     
-    enum MemberType {
-        NonMember,
-        SubDAOMember,
-        DAOMember
-    }
-    
-    enum VoteType {
-        Initial,
-        Progress,
-        Completion
-    }
-    
-    enum VoteResult {
-        Pending,
-        Approved,
-        Rejected
-    }
-    
-    struct Vote {
-        uint256 daoVotesFor;
-        uint256 daoVotesAgainst;
-        uint256 subDaoVotesFor;
-        uint256 subDaoVotesAgainst;
-        uint256 daoVotesRequired;
-        uint256 subDaoVotesRequired;
-        uint256 votingEnds;        // Timestamp when voting period ends
-        mapping(address => bool) hasVoted;
-        bool isFinalized;
-        VoteResult result;
-    }
-    
-    struct Media {
-        string[] mediaTypes;      // Array of MIME types
-        string[] mediaData;       // Array of CIDs or media identifiers
-        uint256 timestamp;        // When the media was added
-        string description;       // Description of the media
-        bool verified;            // Whether the media has been verified
-    }
-    
+    // Structs
     struct Project {
         string name;
         string description;
         string location;
         uint256 regionId;
         address proposer;
-        VoteType currentPhase;
-        mapping(VoteType => bytes32) attestationUIDs;    // Maps phase to attestation
-        mapping(VoteType => Media) media;                // Maps phase to media data
-        bool hasInitialMedia;                            // Check if initial media is provided
+        IProofOfChange.VoteType currentPhase;
+        mapping(IProofOfChange.VoteType => Media) media;
+        mapping(IProofOfChange.VoteType => bytes32) attestationUIDs;
+        bool hasInitialMedia;
+        bool isActive;
     }
-    
-    struct ProjectCreationData {
-        string name;
-        string description;
-        string location;
-        uint256 regionId;
-        string[] mediaTypes;
-        string[] mediaData;
-        string mediaDescription;
-    }
-    
-    // State variables
-    mapping(bytes32 => Vote) public attestationVotes;
-    mapping(address => MemberType) public members;
-    mapping(uint256 => mapping(address => bool)) public regionSubDAOMembers;
-    IEAS private immutable eas;
-    mapping(bytes32 => Project) public projects;
-    mapping(address => bytes32[]) public userProjects;
-    
-    // Events
-    event VoteCast(bytes32 indexed attestationUID, address voter, MemberType memberType);
-    event AttestationApproved(bytes32 indexed attestationUID);
-    event MemberAdded(address member, MemberType memberType, uint256 regionId);
-    event VotingInitialized(bytes32 indexed attestationUID, uint256 votingEnds);
-    event VoteFinalized(bytes32 indexed attestationUID, VoteResult result);
-    event ProjectCreated(
-        bytes32 indexed projectId,
-        address indexed proposer,
-        string name,
-        uint256 regionId
-    );
-    event PhaseAttestationCreated(
-        bytes32 indexed projectId,
-        VoteType phase,
-        bytes32 attestationUID
-    );
-    event MediaAdded(
-        bytes32 indexed projectId,
-        VoteType phase,
-        string[] mediaTypes,
-        string[] mediaData,
-        uint256 timestamp
-    );
-    event MemberRemoved(address member, MemberType previousType);
-    event MemberUpdated(address member, MemberType previousType, MemberType newType, uint256 regionId);
-    event PauseProposed(FunctionGroup indexed group, uint256 duration, bytes32 proposalId);
-    event PauseVoteCast(bytes32 indexed proposalId, address indexed voter);
-    event FunctionGroupPaused(FunctionGroup indexed group, uint256 pauseEnds);
-    event FunctionGroupUnpaused(FunctionGroup indexed group);
-    event EmergencyActionExecuted(address indexed executor, bytes32 indexed projectId, string action);
-    event ProjectFrozen(bytes32 indexed projectId, uint256 duration, address indexed executor);
-    event PhaseForceUpdated(bytes32 indexed projectId, VoteType newPhase, string reason);
-    event ProjectReassigned(bytes32 indexed projectId, address indexed newProposer, address[] newValidators);
-    event VotesUpdated(bytes32 indexed projectId, bytes32[] attestationUIDs);
-    
-    // Errors
-    error InvalidAttestation();
-    error UnauthorizedDAO();
-    error AlreadyVoted();
-    error AttestationNotFound();
-    error InvalidVoteState();
-    error SubDAOMemberNotFromRegion();
-    error VotingPeriodEnded();
-    error VotingPeriodNotEnded();
-    error VoteAlreadyFinalized();
-    error UnauthorizedProposer();
-    error ProjectNotFound();
-    error NoInitialMedia(); 
-    error MediaAlreadyExists();
-    error InvalidMediaData();
-    error MediaTypeMismatch();
-    error MemberNotFound();
-    error AlreadyVotedForPause();
-    error PauseProposalNotFound();
-    error PauseProposalExpired();
-    error PauseVotingNotRequired();
-    error InvalidPauseDuration();
-    error FunctionCurrentlyPaused(FunctionGroup group, uint256 pauseEnds);
-    error InvalidEmergencyAction();
-    error InvalidDataFormat();
-    error InvalidDuration();
-    error InvalidAddresses();
-    error InvalidVoteData();
-    error InvalidPhase();
-    
-    // Cool-down period duration
-    uint256 public votingPeriod = 7 days; // Default value
-    
+
     struct PauseVoting {
         uint256 votesRequired;
         uint256 votesReceived;
@@ -161,16 +39,19 @@ contract ProofOfChange is SchemaResolver {
         bool requiresVoting;
     }
 
-    // Granular pause configuration for different function groups
-    enum FunctionGroup {
-        Voting,          // vote, finalizeVote
-        ProjectCreation, // createProject, addPhaseMedia
-        ProjectProgress, // createPhaseAttestation, advanceToNextPhase
-        Membership      // addDAOMember, removeDAOMember, updateMember
-    }
-
-    mapping(FunctionGroup => PauseConfig) public pauseConfigs;
+    // State variables
+    mapping(bytes32 => Vote) public attestationVotes;
+    mapping(address => IProofOfChange.MemberType) public members;
+    mapping(uint256 => mapping(address => bool)) public regionSubDAOMembers;
+    IEAS private immutable eas;
+    mapping(bytes32 => Project) public projects;
+    mapping(address => bytes32[]) public userProjects;
+    mapping(IProofOfChange.FunctionGroup => PauseConfig) public pauseConfigs;
     mapping(bytes32 => PauseVoting) public pauseVotes;
+    
+    // Cool-down period duration
+    uint256 public votingPeriod = 7 days;
+    
     uint256 public constant EMERGENCY_PAUSE_DURATION = 3 days;
     uint256 public constant STANDARD_PAUSE_DURATION = 14 days;
     uint256 public immutable minimumPauseVotes;
@@ -182,27 +63,27 @@ contract ProofOfChange is SchemaResolver {
         eas = IEAS(easRegistry);
         minimumPauseVotes = (initialDAOMembers.length * 2) / 3; // 66% of initial DAO members
         for (uint256 i = 0; i < initialDAOMembers.length; i++) {
-            members[initialDAOMembers[i]] = MemberType.DAOMember;
+            members[initialDAOMembers[i]] = IProofOfChange.MemberType.DAOMember;
         }
     }
 
     // Modified modifier to check specific function group
-    modifier whenNotPaused(FunctionGroup group) {
+    modifier whenNotPaused(IProofOfChange.FunctionGroup group) {
         PauseConfig storage config = pauseConfigs[group];
         if (config.isPaused) {
             if (config.pauseEnds != 0 && block.timestamp >= config.pauseEnds) {
                 _unpause(group);
             } else {
-                revert FunctionCurrentlyPaused(group, config.pauseEnds);
+                revert IProofOfChange.FunctionCurrentlyPaused(group, config.pauseEnds);
             }
         }
         _;
     }
 
     // New functions for pause management
-    function proposePause(FunctionGroup group, uint256 duration) external returns (bytes32) {
-        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
-        if (duration > STANDARD_PAUSE_DURATION) revert InvalidPauseDuration();
+    function proposePause(IProofOfChange.FunctionGroup group, uint256 duration) external override returns (bytes32) {
+        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert IProofOfChange.UnauthorizedDAO();
+        if (duration > STANDARD_PAUSE_DURATION) revert IProofOfChange.InvalidPauseDuration();
 
         bytes32 proposalId = keccak256(abi.encodePacked(group, duration, block.timestamp));
         PauseVoting storage voting = pauseVotes[proposalId];
@@ -210,7 +91,7 @@ contract ProofOfChange is SchemaResolver {
         voting.duration = duration;
         voting.proposedAt = block.timestamp;
 
-        emit PauseProposed(group, duration, proposalId);
+        emit IProofOfChange.PauseProposed(group, duration, proposalId);
         
         // First vote from proposer
         _castPauseVote(proposalId);
@@ -218,53 +99,53 @@ contract ProofOfChange is SchemaResolver {
         return proposalId;
     }
 
-    function emergencyPause(FunctionGroup group) external {
-        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+    function emergencyPause(IProofOfChange.FunctionGroup group) external {
+        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert IProofOfChange.UnauthorizedDAO();
         
         PauseConfig storage config = pauseConfigs[group];
         config.isPaused = true;
         config.pauseEnds = block.timestamp + EMERGENCY_PAUSE_DURATION;
         config.requiresVoting = false;
         
-        emit FunctionGroupPaused(group, config.pauseEnds);
+        emit IProofOfChange.FunctionGroupPaused(group, config.pauseEnds);
     }
 
-    function castPauseVote(bytes32 proposalId) external {
-        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+    function castPauseVote(bytes32 proposalId) external nonReentrant {
+        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert IProofOfChange.UnauthorizedDAO();
         _castPauseVote(proposalId);
     }
 
     function _castPauseVote(bytes32 proposalId) internal {
         PauseVoting storage voting = pauseVotes[proposalId];
-        if (voting.proposedAt == 0) revert PauseProposalNotFound();
-        if (voting.hasVoted[msg.sender]) revert AlreadyVotedForPause();
-        if (block.timestamp > voting.proposedAt + 1 days) revert PauseProposalExpired();
+        if (voting.proposedAt == 0) revert IProofOfChange.PauseProposalNotFound();
+        if (voting.hasVoted[msg.sender]) revert IProofOfChange.AlreadyVotedForPause();
+        if (block.timestamp > voting.proposedAt + 1 days) revert IProofOfChange.PauseProposalExpired();
 
         voting.hasVoted[msg.sender] = true;
         voting.votesReceived++;
 
-        emit PauseVoteCast(proposalId, msg.sender);
+        emit IProofOfChange.PauseVoteCast(proposalId, msg.sender);
 
         if (voting.votesReceived >= voting.votesRequired && !voting.executed) {
             voting.executed = true;
-            FunctionGroup group = FunctionGroup(uint8(uint256(proposalId) % 4)); // Extract group from proposalId
+            IProofOfChange.FunctionGroup group = IProofOfChange.FunctionGroup(uint8(uint256(proposalId) % 4)); // Extract group from proposalId
             
             PauseConfig storage config = pauseConfigs[group];
             config.isPaused = true;
             config.pauseEnds = block.timestamp + voting.duration;
             config.requiresVoting = true;
             
-            emit FunctionGroupPaused(group, config.pauseEnds);
+            emit IProofOfChange.FunctionGroupPaused(group, config.pauseEnds);
         }
     }
 
-    function _unpause(FunctionGroup group) internal {
+    function _unpause(IProofOfChange.FunctionGroup group) internal {
         PauseConfig storage config = pauseConfigs[group];
         config.isPaused = false;
         config.pauseEnds = 0;
         config.requiresVoting = false;
         
-        emit FunctionGroupUnpaused(group);
+        emit IProofOfChange.FunctionGroupUnpaused(group);
     }
 
     // Emergency actions that can be performed during pause
@@ -272,10 +153,10 @@ contract ProofOfChange is SchemaResolver {
         bytes32 projectId, 
         string calldata action,
         bytes calldata data
-    ) external {
-        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+    ) external nonReentrant {
+        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert IProofOfChange.UnauthorizedDAO();
         Project storage project = projects[projectId];
-        if (project.proposer == address(0)) revert ProjectNotFound();
+        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
 
         bytes32 actionHash = keccak256(bytes(action));
         
@@ -288,7 +169,7 @@ contract ProofOfChange is SchemaResolver {
         } else if (actionHash == keccak256(bytes("updateVotes"))) {
             _updateVoteResults(projectId, data);
         } else {
-            revert InvalidEmergencyAction();
+            revert IProofOfChange.InvalidEmergencyAction();
         }
 
         emit EmergencyActionExecuted(msg.sender, projectId, action);
@@ -298,50 +179,54 @@ contract ProofOfChange is SchemaResolver {
         uint256 duration = abi.decode(data, (uint256));
         
         // Validate duration (between 1 hour and 30 days)
-        if (duration < 1 hours || duration > 30 days) revert InvalidDuration();
+        if (duration < 1 hours || duration > 30 days) revert IProofOfChange.InvalidDuration();
         
         projectFrozenUntil[projectId] = block.timestamp + duration;
         
-        emit ProjectFrozen(projectId, duration, msg.sender);
+        emit IProofOfChange.ProjectFrozen(projectId, duration, msg.sender);
     }
 
     function _forceUpdatePhase(bytes32 projectId, bytes calldata data) internal {
-        (VoteType newPhase, string memory reason) = abi.decode(data, (VoteType, string));
+        (IProofOfChange.VoteType newPhase, string memory reason) = abi.decode(data, (IProofOfChange.VoteType, string));
         
         Project storage project = projects[projectId];
-        if (newPhase == project.currentPhase) revert InvalidPhase();
+        if (newPhase == project.currentPhase) revert IProofOfChange.InvalidPhase();
         
         // Update the project phase
         project.currentPhase = newPhase;
         
-        emit PhaseForceUpdated(projectId, newPhase, reason);
+        emit IProofOfChange.PhaseForceUpdated(projectId, newPhase, reason);
     }
 
     function setVotingPeriod(uint256 newVotingPeriod) external {
-        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) 
+            revert IProofOfChange.UnauthorizedDAO();
+        if (newVotingPeriod < 1 days || newVotingPeriod > 30 days) 
+            revert IProofOfChange.InvalidDuration();
         votingPeriod = newVotingPeriod;
     }
 
     function vote(bytes32 attestationUID, uint256 regionId, bool approve) 
         external 
-        whenNotPaused(FunctionGroup.Voting) 
+        nonReentrant
+        whenNotPaused(IProofOfChange.FunctionGroup.Voting) 
     {
-        MemberType memberType = members[msg.sender];
-        if (memberType == MemberType.NonMember) revert UnauthorizedDAO();
+        IProofOfChange.MemberType memberType = members[msg.sender];
+        if (memberType == IProofOfChange.MemberType.NonMember) revert IProofOfChange.UnauthorizedDAO();
         
         Vote storage voteData = attestationVotes[attestationUID];
-        if (voteData.hasVoted[msg.sender]) revert AlreadyVoted();
+        if (voteData.hasVoted[msg.sender]) revert IProofOfChange.AlreadyVoted();
         
         // Verify attestation exists
         Attestation memory attestation = eas.getAttestation(attestationUID);
-        if (attestation.schema != LOCATION_SCHEMA) revert InvalidAttestation();
+        if (attestation.schema != LOCATION_SCHEMA) revert IProofOfChange.InvalidAttestation();
         
         // Record vote
         voteData.hasVoted[msg.sender] = true;
         
         if (approve) {
-            if (memberType == MemberType.SubDAOMember) {
-                if (!regionSubDAOMembers[regionId][msg.sender]) revert SubDAOMemberNotFromRegion();
+            if (memberType == IProofOfChange.MemberType.SubDAOMember) {
+                if (!regionSubDAOMembers[regionId][msg.sender]) revert IProofOfChange.SubDAOMemberNotFromRegion();
                 voteData.subDaoVotesFor++;
             } else {
                 voteData.daoVotesFor++;
@@ -350,13 +235,13 @@ contract ProofOfChange is SchemaResolver {
             // Check if enough votes received from both groups
             if (voteData.daoVotesFor >= voteData.daoVotesRequired && 
                 voteData.subDaoVotesFor >= voteData.subDaoVotesRequired &&
-                voteData.result == VoteResult.Pending) {
-                voteData.result = VoteResult.Approved;
-                emit AttestationApproved(attestationUID);
+                voteData.result == IProofOfChange.VoteResult.Pending) {
+                voteData.result = IProofOfChange.VoteResult.Approved;
+                emit IProofOfChange.AttestationApproved(attestationUID);
             }
         }
         
-        emit VoteCast(attestationUID, msg.sender, memberType);
+        emit IProofOfChange.VoteCast(attestationUID, msg.sender, memberType);
     }
 
     function initializeVoting(
@@ -364,23 +249,23 @@ contract ProofOfChange is SchemaResolver {
         uint256 daoVotesNeeded,
         uint256 subDaoVotesNeeded
     ) public {
-        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
+        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert IProofOfChange.UnauthorizedDAO();
         
         Vote storage voteData = attestationVotes[attestationUID];
-        if (voteData.daoVotesRequired != 0) revert InvalidVoteState();
+        if (voteData.daoVotesRequired != 0) revert IProofOfChange.InvalidVoteState();
         
         // Verify attestation exists
         Attestation memory attestation = eas.getAttestation(attestationUID);
-        if (attestation.schema != LOCATION_SCHEMA) revert InvalidAttestation();
+        if (attestation.schema != LOCATION_SCHEMA) revert IProofOfChange.InvalidAttestation();
         
         voteData.daoVotesRequired = daoVotesNeeded;
         voteData.subDaoVotesRequired = subDaoVotesNeeded;
         voteData.votingEnds = block.timestamp + votingPeriod;
-        emit VotingInitialized(attestationUID, voteData.votingEnds);
+        emit IProofOfChange.VotingInitialized(attestationUID, voteData.votingEnds);
     }
 
     function isApproved(bytes32 attestationUID) external view returns (bool) {
-        return attestationVotes[attestationUID].result == VoteResult.Approved;
+        return attestationVotes[attestationUID].result == IProofOfChange.VoteResult.Approved;
     }
 
     function isValid(
@@ -394,39 +279,39 @@ contract ProofOfChange is SchemaResolver {
 
     function addDAOMember(address member) external {
         // Add access control as needed
-        members[member] = MemberType.DAOMember;
-        emit MemberAdded(member, MemberType.DAOMember, 0);
+        members[member] = IProofOfChange.MemberType.DAOMember;
+        emit IProofOfChange.MemberAdded(member, IProofOfChange.MemberType.DAOMember, 0);
     }
 
     function addSubDAOMember(address member, uint256 regionId) external {
         // Add access control as needed
-        members[member] = MemberType.SubDAOMember;
+        members[member] = IProofOfChange.MemberType.SubDAOMember;
         regionSubDAOMembers[regionId][member] = true;
-        emit MemberAdded(member, MemberType.SubDAOMember, regionId);
+        emit IProofOfChange.MemberAdded(member, IProofOfChange.MemberType.SubDAOMember, regionId);
     }
 
-    function finalizeVote(bytes32 attestationUID) external {
+    function finalizeVote(bytes32 attestationUID) external nonReentrant {
         Vote storage voteData = attestationVotes[attestationUID];
-        if (voteData.votingEnds > block.timestamp) revert VotingPeriodNotEnded();
-        if (voteData.isFinalized) revert VoteAlreadyFinalized();
+        if (voteData.votingEnds > block.timestamp) revert IProofOfChange.VotingPeriodNotEnded();
+        if (voteData.isFinalized) revert IProofOfChange.VoteAlreadyFinalized();
 
         if (voteData.daoVotesFor >= voteData.daoVotesRequired && 
             voteData.subDaoVotesFor >= voteData.subDaoVotesRequired) {
-            voteData.result = VoteResult.Approved;
+            voteData.result = IProofOfChange.VoteResult.Approved;
             voteData.isFinalized = true;
-            emit VoteFinalized(attestationUID, VoteResult.Approved);
+            emit IProofOfChange.VoteFinalized(attestationUID, IProofOfChange.VoteResult.Approved);
         } else {
-            voteData.result = VoteResult.Rejected;
+            voteData.result = IProofOfChange.VoteResult.Rejected;
             voteData.isFinalized = true;
-            emit VoteFinalized(attestationUID, VoteResult.Rejected);
+            emit IProofOfChange.VoteFinalized(attestationUID, IProofOfChange.VoteResult.Rejected);
         }
     }
 
     function createProject(
         ProjectCreationData calldata data
-    ) external returns (bytes32) {
+    ) external nonReentrant returns (bytes32) {
         if (data.mediaTypes.length == 0 || data.mediaTypes.length != data.mediaData.length) {
-            revert InvalidMediaData();
+            revert IProofOfChange.InvalidMediaData();
         }
         
         bytes32 projectId = keccak256(
@@ -456,10 +341,10 @@ contract ProofOfChange is SchemaResolver {
 
         // Store project ID in user's projects and emit event
         userProjects[msg.sender].push(projectId);
-        emit ProjectCreated(projectId, msg.sender, data.name, data.regionId);
+        emit IProofOfChange.ProjectCreated(projectId, msg.sender, data.name, data.regionId);
 
         // Create initial attestation
-        createPhaseAttestation(projectId, VoteType.Initial);
+        createPhaseAttestation(projectId, IProofOfChange.VoteType.Initial);
 
         return projectId;
     }
@@ -478,7 +363,7 @@ contract ProofOfChange is SchemaResolver {
         newProject.location = location;
         newProject.regionId = regionId;
         newProject.proposer = msg.sender;
-        newProject.currentPhase = VoteType.Initial;
+        newProject.currentPhase = IProofOfChange.VoteType.Initial;
     }
 
     // Helper function to add initial media
@@ -489,7 +374,7 @@ contract ProofOfChange is SchemaResolver {
         string calldata mediaDescription
     ) private {
         Project storage project = projects[projectId];
-        project.media[VoteType.Initial] = Media({
+        project.media[IProofOfChange.VoteType.Initial] = Media({
             mediaTypes: mediaTypes,
             mediaData: mediaData,
             timestamp: block.timestamp,
@@ -501,12 +386,12 @@ contract ProofOfChange is SchemaResolver {
 
     function createPhaseAttestation(
         bytes32 projectId,
-        VoteType phase
-    ) public returns (bytes32) {
+        IProofOfChange.VoteType phase
+    ) public nonReentrant returns (bytes32) {
         Project storage project = projects[projectId];
-        if (project.proposer == address(0)) revert ProjectNotFound();
-        if (msg.sender != project.proposer) revert UnauthorizedProposer();
-        if (phase != project.currentPhase) revert InvalidPhase();
+        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
+        if (msg.sender != project.proposer) revert IProofOfChange.UnauthorizedProposer();
+        if (phase != project.currentPhase) revert IProofOfChange.InvalidPhase();
 
         // Create attestation data
         bytes memory attestationData = abi.encode(
@@ -536,7 +421,7 @@ contract ProofOfChange is SchemaResolver {
         // Store attestation UID for this phase
         project.attestationUIDs[phase] = attestationUID;
 
-        emit PhaseAttestationCreated(projectId, phase, attestationUID);
+        emit IProofOfChange.PhaseAttestationCreated(projectId, phase, attestationUID);
 
         // Initialize voting for this attestation
         this.initializeVoting(
@@ -548,25 +433,25 @@ contract ProofOfChange is SchemaResolver {
         return attestationUID;
     }
 
-    function advanceToNextPhase(bytes32 projectId) external {
+    function advanceToNextPhase(bytes32 projectId) external nonReentrant {
         Project storage project = projects[projectId];
-        if (project.proposer == address(0)) revert ProjectNotFound();
-        if (msg.sender != project.proposer) revert UnauthorizedProposer();
+        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
+        if (msg.sender != project.proposer) revert IProofOfChange.UnauthorizedProposer();
 
         // Get current phase attestation
         bytes32 currentAttestationUID = project.attestationUIDs[project.currentPhase];
         
         // Check if current phase is approved
         Vote storage currentVote = attestationVotes[currentAttestationUID];
-        require(currentVote.result == VoteResult.Approved, "Current phase not approved");
+        require(currentVote.result == IProofOfChange.VoteResult.Approved, "Current phase not approved");
 
         // Determine next phase
-        if (project.currentPhase == VoteType.Initial) {
-            project.currentPhase = VoteType.Progress;
-        } else if (project.currentPhase == VoteType.Progress) {
-            project.currentPhase = VoteType.Completion;
+        if (project.currentPhase == IProofOfChange.VoteType.Initial) {
+            project.currentPhase = IProofOfChange.VoteType.Progress;
+        } else if (project.currentPhase == IProofOfChange.VoteType.Progress) {
+            project.currentPhase = IProofOfChange.VoteType.Completion;
         } else {
-            revert InvalidPhase();
+            revert IProofOfChange.InvalidPhase();
         }
 
         // Create attestation for new phase
@@ -579,7 +464,7 @@ contract ProofOfChange is SchemaResolver {
         string memory location,
         uint256 regionId,
         address proposer,
-        VoteType currentPhase,
+        IProofOfChange.VoteType currentPhase,
         bytes32 currentAttestationUID
     ) {
         Project storage project = projects[projectId];
@@ -602,17 +487,17 @@ contract ProofOfChange is SchemaResolver {
 
     function addPhaseMedia(
         bytes32 projectId,
-        VoteType phase,
+        IProofOfChange.VoteType phase,
         string[] calldata mediaTypes,
         string[] calldata mediaData,
         string calldata mediaDescription
-    ) external {
+    ) external nonReentrant {
         Project storage project = projects[projectId];
-        if (project.proposer == address(0)) revert ProjectNotFound();
-        if (msg.sender != project.proposer) revert UnauthorizedProposer();
-        if (phase != project.currentPhase) revert InvalidPhase();
-        if (mediaTypes.length == 0 || mediaTypes.length != mediaData.length) revert InvalidMediaData();
-        if (project.media[phase].mediaTypes.length > 0) revert MediaAlreadyExists();
+        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
+        if (msg.sender != project.proposer) revert IProofOfChange.UnauthorizedProposer();
+        if (phase != project.currentPhase) revert IProofOfChange.InvalidPhase();
+        if (mediaTypes.length == 0 || mediaTypes.length != mediaData.length) revert IProofOfChange.InvalidMediaData();
+        if (project.media[phase].mediaTypes.length > 0) revert IProofOfChange.MediaAlreadyExists();
 
         project.media[phase] = Media({
             mediaTypes: mediaTypes,
@@ -638,14 +523,14 @@ contract ProofOfChange is SchemaResolver {
     }
 
     function removeDAOMember(address member) external {
-        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
-        if (members[member] == MemberType.NonMember) revert MemberNotFound();
+        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert IProofOfChange.UnauthorizedDAO();
+        if (members[member] == IProofOfChange.MemberType.NonMember) revert IProofOfChange.MemberNotFound();
         
-        MemberType previousType = members[member];
-        members[member] = MemberType.NonMember;
+        IProofOfChange.MemberType previousType = members[member];
+        members[member] = IProofOfChange.MemberType.NonMember;
         
         // If they were a subDAO member, remove region access
-        if (previousType == MemberType.SubDAOMember) {
+        if (previousType == IProofOfChange.MemberType.SubDAOMember) {
             for (uint256 i = 0; i < 100; i++) { // Assuming reasonable number of regions
                 if (regionSubDAOMembers[i][member]) {
                     regionSubDAOMembers[i][member] = false;
@@ -653,24 +538,24 @@ contract ProofOfChange is SchemaResolver {
             }
         }
         
-        emit MemberRemoved(member, previousType);
+        emit IProofOfChange.MemberRemoved(member, previousType);
     }
 
     function updateMember(
         address member,
-        MemberType newType,
+        IProofOfChange.MemberType newType,
         uint256 regionId
     ) external {
-        if (members[msg.sender] != MemberType.DAOMember) revert UnauthorizedDAO();
-        if (members[member] == MemberType.NonMember) revert MemberNotFound();
+        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert IProofOfChange.UnauthorizedDAO();
+        if (members[member] == IProofOfChange.MemberType.NonMember) revert IProofOfChange.MemberNotFound();
         
-        MemberType previousType = members[member];
+        IProofOfChange.MemberType previousType = members[member];
         members[member] = newType;
         
         // Handle subDAO region membership
-        if (newType == MemberType.SubDAOMember) {
+        if (newType == IProofOfChange.MemberType.SubDAOMember) {
             regionSubDAOMembers[regionId][member] = true;
-        } else if (previousType == MemberType.SubDAOMember) {
+        } else if (previousType == IProofOfChange.MemberType.SubDAOMember) {
             // Remove all region access if no longer a subDAO member
             for (uint256 i = 0; i < 100; i++) {
                 if (regionSubDAOMembers[i][member]) {
@@ -679,13 +564,13 @@ contract ProofOfChange is SchemaResolver {
             }
         }
         
-        emit MemberUpdated(member, previousType, newType, regionId);
+        emit IProofOfChange.MemberUpdated(member, previousType, newType, regionId);
     }
 
     function _reassignProject(bytes32 projectId, bytes calldata data) internal {
         (address newProposer, address[] memory newValidators) = abi.decode(data, (address, address[]));
         
-        if (newProposer == address(0) || newValidators.length == 0) revert InvalidAddresses();
+        if (newProposer == address(0) || newValidators.length == 0) revert IProofOfChange.InvalidAddresses();
         
         Project storage project = projects[projectId];
         project.proposer = newProposer;
@@ -693,19 +578,19 @@ contract ProofOfChange is SchemaResolver {
         // Update user projects mapping
         userProjects[newProposer].push(projectId);
         
-        emit ProjectReassigned(projectId, newProposer, newValidators);
+        emit IProofOfChange.ProjectReassigned(projectId, newProposer, newValidators);
     }
 
     function _updateVoteResults(bytes32 projectId, bytes calldata data) internal {
         bytes32[] memory attestationUIDs = abi.decode(data, (bytes32[]));
         
         Project storage project = projects[projectId];
-        if (project.proposer == address(0)) revert ProjectNotFound();
+        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
         
         // Update vote results for each attestation
         for (uint256 i = 0; i < attestationUIDs.length; i++) {
             Vote storage voteData = attestationVotes[attestationUIDs[i]];
-            if (voteData.votingEnds == 0) revert InvalidVoteData();
+            if (voteData.votingEnds == 0) revert IProofOfChange.InvalidVoteData();
             
             // Reset vote data
             voteData.daoVotesFor = 0;
@@ -713,9 +598,9 @@ contract ProofOfChange is SchemaResolver {
             voteData.subDaoVotesFor = 0;
             voteData.subDaoVotesAgainst = 0;
             voteData.isFinalized = false;
-            voteData.result = VoteResult.Pending;
+            voteData.result = IProofOfChange.VoteResult.Pending;
         }
         
-        emit VotesUpdated(projectId, attestationUIDs);
+        emit IProofOfChange.VotesUpdated(projectId, attestationUIDs);
     }
 }

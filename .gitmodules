@@ -10,3 +10,6 @@
 [submodule "lib/eas-contracts"]
 	path = lib/eas-contracts
 	url = https://github.com/ethereum-attestation-service/eas-contracts
+[submodule "lib/logbook"]
+	path = lib/logbook
+	url = https://github.com/AstralProtocol/logbook

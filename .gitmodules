@@ -13,3 +13,6 @@
 [submodule "lib/logbook"]
 	path = lib/logbook
 	url = https://github.com/AstralProtocol/logbook
+[submodule "lib/astralprotocol"]
+	path = lib/astralprotocol
+	url = https://github.com/AstralProtocol/astralprotocol

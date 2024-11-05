@@ -62,10 +62,11 @@ interface IProofOfChange {
     event FunctionGroupPaused(FunctionGroup indexed group, uint256 pauseEnds);
     event FunctionGroupUnpaused(FunctionGroup indexed group);
     event EmergencyActionExecuted(address indexed executor, bytes32 indexed projectId, string action);
-    event ProjectFrozen(bytes32 indexed projectId, uint256 duration, address indexed executor);
+    event ProjectFrozen(bytes32 indexed projectId, uint256 unfreezesAt);
     event PhaseForceUpdated(bytes32 indexed projectId, VoteType newPhase, string reason);
     event ProjectReassigned(bytes32 indexed projectId, address indexed newProposer, address[] newValidators);
     event VotesUpdated(bytes32 indexed projectId, bytes32[] attestationUIDs);
+    event VotingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
     event MediaAction(
         bytes32 indexed projectId,
         VoteType indexed phase,
@@ -109,6 +110,60 @@ interface IProofOfChange {
         uint256 timestamp
     );
 
+    event PhaseWeightsProposed(
+        bytes32 indexed proposalId,
+        uint256 initialWeight,
+        uint256 progressWeight,
+        uint256 completionWeight,
+        address proposer
+    );
+
+    event PhaseWeightsUpdated(
+        bytes32 indexed proposalId,
+        uint256 initialWeight,
+        uint256 progressWeight,
+        uint256 completionWeight
+    );
+
+    event WeightVoteCast(
+        bytes32 indexed proposalId,
+        address voter,
+        bool approved
+    );
+
+    event FundsReleased(
+        bytes32 indexed projectId,
+        VoteType phase,
+        uint256 amount,
+        uint256 totalReleased,
+        uint256 newCompletionPercentage
+    );
+
+    event ProjectCompleted(
+        bytes32 indexed projectId,
+        uint256 timestamp
+    );
+
+    event DistributionProposed(
+        bytes32 indexed projectId,
+        VoteType phase,
+        uint256[] milestonePercentages,
+        address proposer
+    );
+
+    event DistributionVoteCast(
+        bytes32 indexed projectId,
+        VoteType phase,
+        address voter,
+        bool approved
+    );
+
+    event DistributionConfigured(
+        bytes32 indexed projectId,
+        VoteType phase,
+        uint256[] milestonePercentages
+    );
+
     // Errors
     error FunctionCurrentlyPaused(FunctionGroup group, uint256 pauseEnds);
     error UnauthorizedDAO();
@@ -119,7 +174,6 @@ interface IProofOfChange {
     error PauseProposalExpired();
     error InvalidVoteState();
     error InvalidAttestation();
-    error AlreadyVoted();
     error SubDAOMemberNotFromRegion();
     error VotingPeriodNotEnded();
     error VoteAlreadyFinalized();
@@ -139,9 +193,32 @@ interface IProofOfChange {
     error InvalidMilestone();
     error OperationTimelocked(bytes32 operationId);
     error InvalidFundAllocation();
-    error ProjectNotComplete();
     error PhaseNotApproved();
     error FundsAlreadyReleased();
+    error InvalidVotingPeriod();
+
+    // Additional Errors
+    error TimelockNotExpired(bytes32 operationId, uint256 expiryTime);
+    error UnauthorizedEmergencyAdmin();
+    error InsufficientEmergencyApprovals(uint256 received, uint256 required);
+    error UnauthorizedSubDAO();
+    error ProjectNotActive();
+    error InvalidFreezeDuration();
+    error FundTransferFailed();
+
+    error InvalidWeightTotal();
+    error ProposalNotFound();
+    error ProposalAlreadyExecuted();
+    error AlreadyVoted();
+    error InvalidPercentage();
+    error ProjectNotComplete();
+    error PhaseAlreadyStarted();
+    error DistributionAlreadyConfigured();
+    error DistributionNotConfigured();
+    error InvalidMilestoneCount();
+    error InvalidPercentageTotal();
+    error UnauthorizedDistributionProposal();
+    error UnauthorizedDistributionApproval();
 
     // Core functions
     function vote(bytes32 attestationUID, uint256 regionId, bool approve) external;
@@ -153,13 +230,15 @@ interface IProofOfChange {
 
     // Add these new function declarations
     function getProjectDetails(bytes32 projectId) external view returns (
+        address proposer,
         string memory name,
         string memory description,
         string memory location,
         uint256 regionId,
-        address proposer,
         VoteType currentPhase,
-        bytes32 currentAttestationUID
+        ProjectStatus status,
+        uint256 startDate,
+        uint256 expectedDuration
     );
     
     function getUserProjects(address user) external view returns (bytes32[] memory);
@@ -248,6 +327,54 @@ interface IProofOfChange {
         bool requiresMedia,
         bool isComplete,
         string[] memory milestones,
-        uint256 completedMilestonesCount
+        bool[] memory completedStatus
+    );
+
+    // New function declarations
+    function getAttestationApprovalStatus(bytes32 attestationUID) external view returns (bool);
+    
+    function releasePhaseFunds(bytes32 projectId, VoteType phase) external;
+
+    function getProjectFinancials(bytes32 projectId) external view returns (
+        uint256 totalRequested,
+        uint256 initialPhaseAmount,
+        uint256 progressPhaseAmount,
+        uint256 completionPhaseAmount,
+        bool[] memory phasesFunded
+    );
+
+    function emergencyProjectAction(bytes32 projectId, uint256 freezeDuration) external;
+
+    // New events
+    event OperationQueued(bytes32 indexed operationId);
+
+    // New structs
+    struct PhaseWeights {
+        uint256 initialWeight;
+        uint256 progressWeight;
+        uint256 completionWeight;
+        uint256 lastUpdated;
+    }
+
+    struct PhaseDistribution {
+        uint256[] milestonePercentages;
+        bool configured;
+    }
+
+    // Add new function declarations
+    function proposePhaseWeights(
+        uint256 newInitialWeight,
+        uint256 newProgressWeight,
+        uint256 newCompletionWeight
+    ) external;
+
+    function voteOnPhaseWeights(bytes32 proposalId, bool approve) external;
+
+    function calculateOverallCompletion(bytes32 projectId) external view returns (uint256);
+
+    function getCurrentPhaseWeights(bytes32 projectId) external view returns (
+        uint256 initialWeight,
+        uint256 progressWeight,
+        uint256 completionWeight
     );
 }

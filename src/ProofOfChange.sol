@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
-import {IEAS, Attestation, AttestationRequest, AttestationRequestData} from "lib/eas-contracts/contracts/IEAS.sol";
-import {SchemaResolver} from "lib/eas-contracts/contracts/resolver/SchemaResolver.sol";
+import {IEAS, Attestation, AttestationRequest, AttestationRequestData} from "@eas/IEAS.sol";
+import {SchemaResolver} from "@eas/resolver/SchemaResolver.sol";
 import {IProofOfChange} from "./Interfaces/IProofOfChange.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";

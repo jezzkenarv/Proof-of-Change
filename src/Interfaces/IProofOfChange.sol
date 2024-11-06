@@ -72,7 +72,9 @@ interface IProofOfChange {
         uint32 daoVotesRequired;      // Number of DAO votes needed
         uint32 subDaoVotesRequired;   // Number of subDAO votes needed
         uint32 daoVotesFor;           // Current DAO votes in favor
+        uint32 daoVotesAgainst;       // Current DAO votes against
         uint32 subDaoVotesFor;        // Current subDAO votes in favor
+        uint32 subDaoVotesAgainst;    // Current subDAO votes against
         uint64 votingEnds;            // Timestamp when voting ends
         VoteResult result;            // Current vote result
         bool isFinalized;             // Whether vote has been finalized
@@ -81,9 +83,6 @@ interface IProofOfChange {
 
     /// @notice Data required to create a new project
     struct ProjectCreationData {
-        string name;                    // Project name
-        string description;             // Project description
-        uint256 startDate;              // Planned start date
         uint256 duration;               // Expected duration in seconds
         uint256 requestedFunds;         // Amount of funds requested
         uint256 regionId;               // Geographic region ID
@@ -105,30 +104,31 @@ interface IProofOfChange {
         bool configured;                  // Whether distribution is set
     }
 
-    /// @notice Proof of project state at a specific phase
+    /// @notice Simplified state proof focused on Logbook attestations
     struct StateProof {
-        bytes32 attestationUID;    // EAS attestation identifier
-        bytes32 contentHash;       // Hash of content (IPFS CID)
-        uint64 timestamp;          // When proof was submitted
-        bool verified;             // Whether proof is verified
+        bytes32 attestationUID;
+        uint64 timestamp;
+        bool verified;
     }
 
-    /// @notice Core project data structure
+    /// @notice Simplified project data structure focusing on essential elements
     struct Project {
-        address proposer;          // Project creator address
-        string name;               // Project name
-        string description;        // Project description
-        string location;           // Geographic location
-        uint256 regionId;          // Region identifier
-        uint256 requestedFunds;    // Total funds requested
-        uint256 expectedDuration;  // Expected project duration
-        ProjectStatus status;      // Current project status
-        VoteType currentPhase;     // Current project phase
-        uint64 createdAt;          // Creation timestamp
-        uint64 startDate;          // Project start date
-        bool fundsReleased;        // Whether funds were released
-        mapping(VoteType => StateProof) stateProofs;      // Proofs by phase
-        mapping(VoteType => PhaseProgress) phaseProgress;  // Progress by phase
+        // Core data
+        address proposer;
+        uint256 regionId;
+        uint256 requestedFunds;
+        uint256 expectedDuration;
+
+        // Status
+        ProjectStatus status;
+        VoteType currentPhase;
+        bool fundsReleased;
+        uint64 createdAt;
+
+        // Proofs and progress
+        mapping(VoteType => StateProof) stateProofs;
+        mapping(VoteType => PhaseProgress) phaseProgress;
+
     }
 
     /// @notice Tracks progress within a project phase
@@ -159,17 +159,15 @@ interface IProofOfChange {
     /// @notice Emitted when a project is created
     /// @param projectId Unique identifier of the project
     /// @param proposer Address of project creator
-    /// @param name Name of the project
-    /// @param regionId Region identifier
     /// @param requestedFunds Amount of funds requested
-    /// @param timestamp Creation timestamp
+    /// @param duration Expected duration of the project
+    /// @param logbookAttestationUID Initial logbook attestation
     event ProjectCreated(
         bytes32 indexed projectId,
         address indexed proposer,
-        string name,
-        uint256 regionId,
         uint256 requestedFunds,
-        uint256 timestamp
+        uint256 duration,
+        bytes32 logbookAttestationUID
     );
 
     /// @notice Emitted when a project action occurs
@@ -216,8 +214,7 @@ interface IProofOfChange {
     /// @notice Emitted when progress is submitted for a project
     /// @param projectId The ID of the project
     /// @param logbookAttestationUID The attestation UID for the progress
-    /// @param contentHash Hash of the progress content
-    event ProgressSubmitted(bytes32 indexed projectId, bytes32 logbookAttestationUID, bytes32 contentHash);
+    event ProgressSubmitted(bytes32 indexed projectId, bytes32 logbookAttestationUID);
 
     /// @notice Emitted when funds are released for a project phase
     /// @param projectId The ID of the project
@@ -252,6 +249,18 @@ interface IProofOfChange {
     event VotingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
     event OperationQueued(bytes32 indexed operationId);
 
+    /// @notice Emitted when a state proof is verified
+    /// @param projectId The ID of the project
+    /// @param phase The phase of the project
+    /// @param verifier The address of the verifier
+    /// @param attestationUID The attestation UID
+    event StateVerified(
+        bytes32 indexed projectId,
+        VoteType phase,
+        address verifier,
+        bytes32 attestationUID
+    );
+
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -262,54 +271,61 @@ interface IProofOfChange {
     error FunctionCurrentlyPaused(FunctionGroup group, uint256 pauseEnds);
     error UnauthorizedDAO();
     error UnauthorizedProposer();
-    error InvalidPauseDuration();
-    error PauseProposalNotFound();
-    error AlreadyVotedForPause();
-    error PauseProposalExpired();
-    error InvalidVoteState();
-    error InvalidAttestation();
-    error SubDAOMemberNotFromRegion();
-    error VotingPeriodNotEnded();
-    error VoteAlreadyFinalized();
-    error InvalidMediaData();
-    error ProjectNotFound();
-    error InvalidPhase();
-    error MediaAlreadyExists();
-    error InvalidDuration();
-    error InvalidEmergencyAction();
-    error InvalidAddresses();
-    error InvalidVoteData();
-    error MemberNotFound();
-    error UnauthorizedOwner();
-    error UnauthorizedAdmin();
-    error InvalidStatusTransition();
-    error ProjectNotCompletable();
-    error InvalidMilestone();
-    error OperationTimelocked(bytes32 operationId);
-    error InvalidFundAllocation();
-    error PhaseNotApproved();
-    error FundsAlreadyReleased();
-    error InvalidVotingPeriod();
-    error TimelockNotExpired(bytes32 operationId, uint256 expiryTime);
-    error UnauthorizedEmergencyAdmin();
-    error InsufficientEmergencyApprovals(uint256 received, uint256 required);
     error UnauthorizedSubDAO();
-    error ProjectNotActive();
-    error InvalidFreezeDuration();
-    error FundTransferFailed();
-    error InvalidWeightTotal();
-    error ProposalNotFound();
-    error ProposalAlreadyExecuted();
-    error AlreadyVoted();
-    error InvalidPercentage();
-    error ProjectNotComplete();
-    error PhaseAlreadyStarted();
-    error DistributionAlreadyConfigured();
-    error DistributionNotConfigured();
-    error InvalidMilestoneCount();
-    error InvalidPercentageTotal();
+    error UnauthorizedAdmin();
+    error UnauthorizedEmergencyAdmin();
     error UnauthorizedDistributionProposal();
     error UnauthorizedDistributionApproval();
+    
+    error InvalidPauseDuration();
+    error InvalidDuration();
+    error InvalidFreezeDuration();
+    error InvalidPhase();
+    error InvalidStatusTransition();
+    error InvalidMilestone();
+    error InvalidFundAllocation();
+    error InvalidVotingPeriod();
+    error InvalidWeightTotal();
+    error InvalidPercentage();
+    error InvalidPercentageTotal();
+    error InvalidMilestoneCount();
+    error InvalidVoteData();
+    error InvalidAttestation();
+    error InvalidVoteState();
+    
+    error ProjectNotFound();
+    error ProjectNotActive();
+    error ProjectNotComplete();
+    error ProjectNotCompletable();
+    error ProjectIsFrozen(bytes32 projectId, uint256 unfreezesAt);
+    
+    error PauseProposalNotFound();
+    error PauseProposalExpired();
+    error ProposalNotFound();
+    error ProposalAlreadyExecuted();
+    
+    error AlreadyVoted();
+    error AlreadyVotedForPause();
+    error VoteAlreadyFinalized();
+    error VotingPeriodNotEnded();
+    
+    error PhaseNotApproved();
+    error PhaseAlreadyStarted();
+    
+    error DistributionAlreadyConfigured();
+    error DistributionNotConfigured();
+    
+    error FundsAlreadyReleased();
+    error FundTransferFailed();
+    
+    error SubDAOMemberNotFromRegion();
+    error MemberNotFound();
+    
+    error OperationTimelocked(bytes32 operationId);
+    error TimelockNotExpired(bytes32 operationId, uint256 expiryTime);
+    error InsufficientEmergencyApprovals(uint256 received, uint256 required);
+
+    error VotingPeriodEnded();
 
     /*//////////////////////////////////////////////////////////////
                             CORE FUNCTIONS
@@ -341,7 +357,7 @@ interface IProofOfChange {
     function advanceToNextPhase(bytes32 projectId) external;
     function updateProjectStatus(bytes32 projectId, ProjectStatus newStatus) external;
     function updateMilestone(bytes32 projectId, string calldata milestone, bool completed) external;
-    function submitProgress(bytes32 projectId, bytes32 logbookAttestationUID, string calldata contentCID) external;
+    function submitProgress(bytes32 projectId, bytes32 logbookAttestationUID) external;
 
     function releasePhaseFunds(bytes32 projectId, VoteType phase) external;
     function proposePhaseWeights(uint256 newInitialWeight, uint256 newProgressWeight, uint256 newCompletionWeight) external;
@@ -361,17 +377,17 @@ interface IProofOfChange {
 
     /// @notice Get detailed information about a project
     /// @param projectId The project to query
-    /// @return Project details including proposer, name, status, etc.
+    /// @return proposer The project proposer address
+    /// @return requestedFunds The amount of funds requested
+    /// @return duration The expected project duration
+    /// @return currentPhase The current project phase
+    /// @return attestationUIDs Array of attestation UIDs
     function getProjectDetails(bytes32 projectId) external view returns (
         address proposer,
-        string memory name,
-        string memory description,
-        string memory location,
-        uint256 regionId,
+        uint256 requestedFunds,
+        uint256 duration,
         VoteType currentPhase,
-        ProjectStatus status,
-        uint256 startDate,
-        uint256 expectedDuration
+        bytes32[] memory attestationUIDs
     );
 
     /// @notice Get list of projects created by a user
@@ -385,8 +401,7 @@ interface IProofOfChange {
         uint256 startTime,
         uint256 endTime,
         bool completed,
-        bytes32 attestationUID,
-        bytes32 contentHash
+        bytes32 attestationUID
     );
     function getAttestationApprovalStatus(bytes32 attestationUID) external view returns (bool);
     function getProjectFinancials(bytes32 projectId) external view returns (
@@ -401,5 +416,11 @@ interface IProofOfChange {
         uint256 initialWeight,
         uint256 progressWeight,
         uint256 completionWeight
+    );
+
+    function getStateProof(bytes32 projectId, VoteType phase) external view returns (
+        bytes32 attestationUID,
+        uint256 timestamp,
+        bool verified
     );
 }

@@ -280,52 +280,46 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @param data The project creation data struct
     /// @return projectId The unique identifier of the created project
     /// @dev Requires funds to be sent equal to requestedFunds
-    function createProject(ProjectCreationData calldata data) external payable nonReentrant returns (bytes32) {
+    function createProject(ProjectCreationData memory data) external payable nonReentrant whenNotPaused(FunctionGroup.ProjectCreation) returns (bytes32) {
+        // Validate inputs
+        require(msg.value == data.requestedFunds, "Incorrect funds");
+        require(data.duration >= 1 days && data.duration <= 365 days, "Invalid duration");
+
         // Verify Logbook attestation
         Attestation memory attestation = eas.getAttestation(data.logbookAttestationUID);
         require(attestation.schema == LOGBOOK_SCHEMA, "Invalid attestation");
 
-        // Validate parameters
-        require(data.duration >= 1 days && data.duration <= 365 days, "Invalid duration");
-        require(msg.value == data.requestedFunds, "Incorrect funds sent");
+        // Generate project ID
+        bytes32 projectId = keccak256(abi.encodePacked(
+            msg.sender, 
+            data.logbookAttestationUID, 
+            block.timestamp
+        ));
 
-        bytes32 projectId = keccak256(
-            abi.encodePacked(
-                msg.sender,
-                data.logbookAttestationUID,
-                block.timestamp
-            )
-        );
+        // Create project
+        Project storage newProject = projects[projectId];
+        newProject.proposer = msg.sender;
+        newProject.regionId = data.regionId;
+        newProject.requestedFunds = data.requestedFunds;
+        newProject.expectedDuration = data.duration;
+        newProject.status = ProjectStatus.Pending;
+        newProject.currentPhase = VoteType.Initial;
+        newProject.fundsReleased = false;
+        newProject.createdAt = uint64(block.timestamp);
 
-        Project storage project = projects[projectId];
-        project.proposer = msg.sender;
-        project.name = data.name;
-        project.description = data.description;
-        project.requestedFunds = data.requestedFunds;
-        project.expectedDuration = data.duration;
-        project.createdAt = uint64(block.timestamp);
-        project.startDate = uint64(data.startDate);
-        project.status = ProjectStatus.Active;
-        project.currentPhase = VoteType.Initial;
-        project.regionId = data.regionId;
-        
-        // Store proof of content
-        project.stateProofs[VoteType.Initial] = StateProof({
+        // Initialize state proof
+        newProject.stateProofs[VoteType.Initial] = StateProof({
             attestationUID: data.logbookAttestationUID,
-            contentHash: keccak256(bytes(data.contentCID)),
             timestamp: uint64(block.timestamp),
             verified: false
         });
 
-        userProjects[msg.sender].push(projectId);
-
         emit ProjectCreated(
             projectId,
             msg.sender,
-            data.name,
-            data.regionId,
             data.requestedFunds,
-            block.timestamp
+            data.duration,
+            data.logbookAttestationUID
         );
 
         return projectId;
@@ -335,6 +329,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @param projectId The ID of the project to advance
     /// @dev Only callable by project proposer after current phase is approved
     function advanceToNextPhase(bytes32 projectId) external {
+        _checkNotFrozen(projectId);
         Project storage project = projects[projectId];
         if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
         if (msg.sender != project.proposer) revert IProofOfChange.UnauthorizedProposer();
@@ -426,27 +421,25 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
     /// @notice Submits progress update for a project phase
     /// @param projectId The ID of the project
-    /// @param logbookAttestationUID The attestation UID for the progress update
-    /// @param contentCID The IPFS CID of the progress content
-    /// @dev Creates new state proof for current phase
-    function submitProgress(bytes32 projectId, bytes32 logbookAttestationUID, string calldata contentCID) external {
+    /// @param progressAttestationUID The attestation UID for the progress update
+    function submitProgress(
+        bytes32 projectId,
+        bytes32 progressAttestationUID
+    ) external nonReentrant {
         Project storage project = projects[projectId];
-        require(project.status == ProjectStatus.Active, "Project not active");
+        require(msg.sender == project.proposer, "Not proposer");
+        require(project.currentPhase == VoteType.Progress, "Wrong phase");
 
-        VoteType currentPhase = project.currentPhase;
-        
-        project.stateProofs[currentPhase] = StateProof({
-            attestationUID: logbookAttestationUID,
-            contentHash: keccak256(bytes(contentCID)),
+        Attestation memory attestation = eas.getAttestation(progressAttestationUID);
+        require(attestation.schema == LOGBOOK_SCHEMA, "Invalid attestation");
+
+        project.stateProofs[VoteType.Progress] = StateProof({
+            attestationUID: progressAttestationUID,
             timestamp: uint64(block.timestamp),
             verified: false
         });
 
-        emit ProgressSubmitted(
-            projectId,
-            logbookAttestationUID,
-            keccak256(bytes(contentCID))
-        );
+        emit ProgressSubmitted(projectId, progressAttestationUID);
     }
 
     function _initializePhaseProgress(bytes32 projectId, VoteType phase, string[] memory milestones) internal {
@@ -504,9 +497,9 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         // Create attestation data
         bytes memory attestationData = abi.encode(
             projectId,
-            project.name,
-            project.description,
-            project.location,
+            "",     // Empty string for removed name field
+            "",     // Empty string for removed description field
+            "",     // Empty string for removed location field
             project.regionId,
             phase
         );
@@ -526,18 +519,17 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             })
         );
 
-        // Store in stateProofs instead of attestationUIDs
+        // Store in stateProofs
         project.stateProofs[phase] = StateProof({
             attestationUID: attestationUID,
-            contentHash: bytes32(0), // This will be set later with submitProgress
             timestamp: uint64(block.timestamp),
             verified: false
         });
 
         emit IProofOfChange.PhaseAttestationCreated(projectId, phase, attestationUID);
 
-        // Initialize voting with default requirements
-        this.initializeVoting(
+        // Change from external call (this.initializeVoting) to internal call
+        _initializeVoting(
             attestationUID,
             3,  // Required DAO votes
             3   // Required subDAO votes
@@ -546,84 +538,110 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         return attestationUID;
     }
 
+    // Keep the external function to satisfy the interface
+    function initializeVoting(
+        bytes32 attestationUID, 
+        uint256 daoVotesNeeded, 
+        uint256 subDaoVotesNeeded
+    ) external {
+        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert UnauthorizedDAO();
+        _initializeVoting(attestationUID, daoVotesNeeded, subDaoVotesNeeded);
+    }
+
+    // Add internal version for use within contract
+    function _initializeVoting(
+        bytes32 attestationUID, 
+        uint256 daoVotesNeeded, 
+        uint256 subDaoVotesNeeded
+    ) internal {
+        Vote storage voteData = attestationVotes[attestationUID];
+        if (voteData.daoVotesRequired != 0) revert InvalidVoteState();
+        
+        // Verify attestation validity
+        Attestation memory attestation = eas.getAttestation(attestationUID);
+        if (attestation.schema != LOGBOOK_SCHEMA) revert InvalidAttestation();
+        
+        voteData.daoVotesRequired = 0;  // No minimum required
+        voteData.subDaoVotesRequired = 0;  // No minimum required
+        voteData.votingEnds = uint64(block.timestamp + votingPeriod);
+        
+        emit VotingInitialized(
+            attestationUID, 
+            voteData.votingEnds
+        );
+    }
+
     /// @notice Cast a vote on an attestation
     /// @param attestationUID The attestation to vote on
     /// @param regionId The region ID for subDAO validation
     /// @param approve True to vote in favor, false against
     function vote(bytes32 attestationUID, uint256 regionId, bool approve) external {
+        Vote storage voteData = attestationVotes[attestationUID];
+        
+        // Check if voting period has ended
+        if (block.timestamp > voteData.votingEnds) {
+            revert VotingPeriodEnded();
+        }
+        
         // Validate voter eligibility
         IProofOfChange.MemberType memberType = members[msg.sender];
-        if (memberType == IProofOfChange.MemberType.NonMember) revert IProofOfChange.UnauthorizedDAO();
-        
-        Vote storage voteData = attestationVotes[attestationUID];
-        if (voteData.hasVoted[msg.sender]) revert IProofOfChange.AlreadyVoted();
-        
-        // Verify attestation validity
-        Attestation memory attestation = eas.getAttestation(attestationUID);
-        if (attestation.schema != LOGBOOK_SCHEMA) revert IProofOfChange.InvalidAttestation();
+        if (memberType == IProofOfChange.MemberType.NonMember) revert UnauthorizedDAO();
+        if (voteData.hasVoted[msg.sender]) revert AlreadyVoted();
         
         // Record vote
         voteData.hasVoted[msg.sender] = true;
         
-        if (approve) {
-            // Handle vote based on member type
-            if (memberType == IProofOfChange.MemberType.SubDAOMember) {
-                if (!regionSubDAOMembers[regionId][msg.sender]) revert IProofOfChange.SubDAOMemberNotFromRegion();
+        // Handle vote based on member type
+        if (memberType == IProofOfChange.MemberType.SubDAOMember) {
+            if (!regionSubDAOMembers[regionId][msg.sender]) {
+                revert SubDAOMemberNotFromRegion();
+            }
+            if (approve) {
                 voteData.subDaoVotesFor++;
             } else {
-                voteData.daoVotesFor++;
+                voteData.subDaoVotesAgainst++;
             }
-            
-            // Check for approval threshold
-            if (voteData.daoVotesFor >= voteData.daoVotesRequired && 
-                voteData.subDaoVotesFor >= voteData.subDaoVotesRequired &&
-                voteData.result == IProofOfChange.VoteResult.Pending) {
-                voteData.result = IProofOfChange.VoteResult.Approved;
-                emit IProofOfChange.AttestationApproved(attestationUID);
+        } else {
+            if (approve) {
+                voteData.daoVotesFor++;
+            } else {
+                voteData.daoVotesAgainst++;
             }
         }
         
-        emit IProofOfChange.VoteCast(attestationUID, msg.sender, memberType);
-    }
-
-    /// @notice Initialize voting parameters for an attestation
-    /// @param attestationUID The attestation to initialize voting for
-    /// @param daoVotesNeeded Number of DAO votes required
-    /// @param subDaoVotesNeeded Number of subDAO votes required
-    /// @dev Only callable by DAO members
-    function initializeVoting(bytes32 attestationUID, uint256 daoVotesNeeded, uint256 subDaoVotesNeeded) public {
-        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert IProofOfChange.UnauthorizedDAO();
-        
-        Vote storage voteData = attestationVotes[attestationUID];
-        if (voteData.daoVotesRequired != 0) revert IProofOfChange.InvalidVoteState();
-        
-        // Verify attestation validity
-        Attestation memory attestation = eas.getAttestation(attestationUID);
-        if (attestation.schema != LOGBOOK_SCHEMA) revert IProofOfChange.InvalidAttestation();
-        
-        // Set voting parameters with explicit type conversions
-        voteData.daoVotesRequired = uint32(daoVotesNeeded);
-        voteData.subDaoVotesRequired = uint32(subDaoVotesNeeded);
-        voteData.votingEnds = uint64(block.timestamp + votingPeriod);
-        
-        emit IProofOfChange.VotingInitialized(attestationUID, voteData.votingEnds);
+        emit VoteCast(attestationUID, msg.sender, memberType);
     }
 
     /// @notice Finalizes a vote after voting period ends
     /// @param attestationUID The attestation to finalize
     function finalizeVote(bytes32 attestationUID) external {
         Vote storage voteData = attestationVotes[attestationUID];
-        if (voteData.votingEnds > block.timestamp) revert IProofOfChange.VotingPeriodNotEnded();
-        if (voteData.isFinalized) revert IProofOfChange.VoteAlreadyFinalized();
-
-        // Determine final result
-        bool isApproved = voteData.daoVotesFor >= voteData.daoVotesRequired && 
-                         voteData.subDaoVotesFor >= voteData.subDaoVotesRequired;
         
-        voteData.result = isApproved ? IProofOfChange.VoteResult.Approved : IProofOfChange.VoteResult.Rejected;
+        // Check if voting can be finalized
+        if (block.timestamp <= voteData.votingEnds) {
+            revert VotingPeriodNotEnded();
+        }
+        if (voteData.isFinalized) {
+            revert VoteAlreadyFinalized();
+        }
+
+        // Determine result by simple majority
+        bool daoApproved = voteData.daoVotesFor > voteData.daoVotesAgainst;
+        bool subDaoApproved = voteData.subDaoVotesFor > voteData.subDaoVotesAgainst;
+        
+        // Both groups must approve by majority
+        if (daoApproved && subDaoApproved) {
+            voteData.result = VoteResult.Approved;
+        } else {
+            voteData.result = VoteResult.Rejected;
+        }
+
         voteData.isFinalized = true;
         
-        emit IProofOfChange.VoteFinalized(attestationUID, voteData.result);
+        emit VoteFinalized(
+            attestationUID, 
+            voteData.result
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -663,7 +681,11 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
     /// @notice Gets financial details for a project
     /// @param projectId The ID of the project
-    /// @return Financial information including amounts and funding status
+    /// @return totalRequested Total funds requested
+    /// @return initialPhaseAmount Amount allocated to initial phase
+    /// @return progressPhaseAmount Amount allocated to progress phase
+    /// @return completionPhaseAmount Amount allocated to completion phase
+    /// @return phasesFunded Array indicating which phases have been funded
     function getProjectFinancials(bytes32 projectId) external view returns (
         uint256 totalRequested,
         uint256 initialPhaseAmount,
@@ -877,45 +899,52 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
     function getProjectDetails(bytes32 projectId) external view returns (
         address proposer,
-        string memory name,
-        string memory description,
-        string memory location,
-        uint256 regionId,
-        IProofOfChange.VoteType currentPhase,
-        ProjectStatus status,
-        uint256 startDate,
-        uint256 expectedDuration
+        uint256 requestedFunds,
+        uint256 duration,
+        VoteType currentPhase,
+        bytes32[] memory attestationUIDs
     ) {
         Project storage project = projects[projectId];
+        
+        bytes32[] memory uids = new bytes32[](3);
+        uids[0] = project.stateProofs[VoteType.Initial].attestationUID;
+        uids[1] = project.stateProofs[VoteType.Progress].attestationUID;
+        uids[2] = project.stateProofs[VoteType.Completion].attestationUID;
+
         return (
             project.proposer,
-            project.name,
-            project.description,
-            project.location,
-            project.regionId,
+            project.requestedFunds,
+            project.expectedDuration,
             project.currentPhase,
-            project.status,
-            project.startDate,
-            project.expectedDuration
+            uids
         );
     }
 
-    function getPhaseProgress(bytes32 projectId, VoteType phase) external view override returns (
+    /// @notice Gets progress details for a specific project phase
+    /// @param projectId The ID of the project
+    /// @param phase The phase to query
+    /// @return startTime Phase start time
+    /// @return endTime Phase target end time
+    /// @return completed Whether phase is complete
+    /// @return attestationUID The attestation UID for this phase
+    function getPhaseProgress(
+        bytes32 projectId, 
+        VoteType phase
+    ) external view returns (
         uint256 startTime,
         uint256 endTime,
         bool completed,
-        bytes32 attestationUID,
-        bytes32 contentHash
+        bytes32 attestationUID
     ) {
         Project storage project = projects[projectId];
+        PhaseProgress storage progress = project.phaseProgress[phase];
         StateProof storage proof = project.stateProofs[phase];
-        
+
         return (
-            proof.timestamp,
-            proof.timestamp + project.expectedDuration,
-            proof.verified,
-            proof.attestationUID,
-            proof.contentHash
+            progress.startTime,
+            progress.targetEndTime,
+            progress.isComplete,
+            proof.attestationUID
         );
     }
 
@@ -947,14 +976,12 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
     function getStateProof(bytes32 projectId, VoteType phase) external view returns (
         bytes32 attestationUID,
-        bytes32 contentHash,
         uint256 timestamp,
         bool verified
     ) {
         StateProof storage proof = projects[projectId].stateProofs[phase];
         return (
             proof.attestationUID,
-            proof.contentHash,
             proof.timestamp,
             proof.verified
         );
@@ -975,15 +1002,14 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             // Decode Logbook data
             (
                 uint256 logbookTimestamp,
-                string memory logbookLocation,
-                string memory logbookMemo
+                ,  // logbookLocation not used
+                   // logbookMemo not used
             ) = decodeLogbookData(attestation.data);
 
             // Store Logbook proof
             Project storage projectData = projects[attestation.refUID];
             projectData.stateProofs[projectData.currentPhase] = StateProof({
                 attestationUID: attestation.uid,
-                contentHash: keccak256(abi.encodePacked(logbookLocation, logbookMemo)),
                 timestamp: uint64(logbookTimestamp),
                 verified: false
             });
@@ -994,16 +1020,16 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         // Decode project attestation data
         (
             bytes32 projectId,
-            string memory name,
-            string memory description,
-            string memory location,
+            ,  // name (removed)
+            ,  // description (removed)
+            ,  // location (removed)
             uint256 regionId,
             IProofOfChange.VoteType phase
         ) = abi.decode(attestation.data, (
             bytes32,
-            string,
-            string,
-            string,
+            string,  // keep decoder format
+            string,  // keep decoder format
+            string,  // keep decoder format
             uint256,
             IProofOfChange.VoteType
         ));
@@ -1098,7 +1124,9 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
     /// @notice Decodes logbook attestation data
     /// @param data The encoded attestation data
-    /// @return Decoded logbook fields
+    /// @return timestamp The timestamp of the logbook entry
+    /// @return location The location data
+    /// @return memo The memo content
     function decodeLogbookData(bytes memory data) internal pure returns (
         uint256 timestamp,
         string memory location,
@@ -1119,4 +1147,107 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             )
         );
     }
+
+    /// @notice Verifies state change for a project phase
+    /// @param projectId The ID of the project
+    /// @param phase The phase to verify
+    /// @param approve True to approve the state change, false to reject
+    /// @dev Only DAO members can verify state changes
+    function verifyStateChange(
+        bytes32 projectId,
+        VoteType phase,
+        bool approve
+    ) external {
+        require(isDAOorSubDAO(msg.sender), "Not authorized");
+        
+        Project storage project = projects[projectId];
+        StateProof storage stateProof = project.stateProofs[phase];
+
+        Attestation memory attestation = eas.getAttestation(stateProof.attestationUID);
+        
+        if (phase != VoteType.Initial) {
+            bytes32 initialAttestationUID = project.stateProofs[VoteType.Initial].attestationUID;
+            // DAO members verify changes by comparing attestations
+        }
+
+        if (approve) {
+            stateProof.verified = true;
+            emit StateVerified(
+                projectId,
+                phase,
+                msg.sender,
+                attestation.uid
+            );
+        }
+    }
+
+    /// @notice Checks if an attestation has been approved
+    /// @param attestationUID The attestation to check
+    /// @return bool True if attestation is approved
+    function _isApproved(bytes32 attestationUID) internal view returns (bool) {
+        Vote storage voteData = attestationVotes[attestationUID];
+        
+        // If voting period hasn't ended, return false
+        if (block.timestamp <= voteData.votingEnds) {
+            return false;
+        }
+        
+        // If vote is still pending after voting period ended, calculate result
+        if (voteData.result == VoteResult.Pending) {
+            // Calculate total votes
+            uint32 totalVotesFor = voteData.daoVotesFor + voteData.subDaoVotesFor;
+            uint32 totalVotesAgainst = voteData.daoVotesAgainst + voteData.subDaoVotesAgainst;
+            
+            // Return true if majority voted in favor
+            return totalVotesFor > totalVotesAgainst;
+        }
+        
+        // If vote has been finalized, return true only if Approved
+        return voteData.result == VoteResult.Approved;
+    }
+
+    /// @notice Get attestation approval status
+    /// @param attestationUID The attestation to check
+    /// @return bool True if attestation is approved
+    function getAttestationApprovalStatus(bytes32 attestationUID) external view returns (bool) {
+        return _isApproved(attestationUID);
+    }
+
+    /// @notice Internal function to submit progress for a project
+    /// @param projectId The project ID
+    /// @param progressAttestationUID The attestation UID
+    function _submitProgress(
+        bytes32 projectId,
+        bytes32 progressAttestationUID
+    ) internal {
+        Project storage project = projects[projectId];
+        require(msg.sender == project.proposer, "Not proposer");
+        require(project.currentPhase == VoteType.Progress, "Wrong phase");
+
+        Attestation memory attestation = eas.getAttestation(progressAttestationUID);
+        require(attestation.schema == LOGBOOK_SCHEMA, "Invalid attestation");
+
+        project.stateProofs[VoteType.Progress] = StateProof({
+            attestationUID: progressAttestationUID,
+            timestamp: uint64(block.timestamp),
+            verified: false
+        });
+
+        emit ProgressSubmitted(projectId, progressAttestationUID);
+    }
+
+    // Add this helper function in the contract
+    function isDAOorSubDAO(address account) internal view returns (bool) {
+        MemberType memberType = members[account];
+        return memberType == MemberType.DAOMember || memberType == MemberType.SubDAOMember;
+    }
+
+    // Add a modifier or internal function to check frozen status
+    function _checkNotFrozen(bytes32 projectId) internal view {
+        uint256 frozenUntil = projectFrozenUntil[projectId];
+        if (frozenUntil > block.timestamp) {
+            revert ProjectIsFrozen(projectId, frozenUntil);
+        }
+    }
+
 }

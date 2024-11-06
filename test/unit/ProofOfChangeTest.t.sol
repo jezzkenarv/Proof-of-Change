@@ -1,234 +1,676 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
-// So far tests cover:
-// - Proposal submission
-// - Main DAO voting
-// - Sub DAO voting
-// - Failure cases
-
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {console} from "forge-std/console.sol";
 import {ProofOfChange} from "../../src/ProofOfChange.sol";
-import "safe-smart-account/contracts/Safe.sol";
 import {IProofOfChange} from "../../src/Interfaces/IProofOfChange.sol";
+import {IEAS, AttestationRequest, AttestationRequestData, Attestation} from "@eas/IEAS.sol";
 
-contract RetroFundUnitTest is Test {
-    // RetroFund public retroFund;
-    // address public gnosisSafe;
+// Define minimal interfaces needed for testing
+interface IMinimalEAS {
+    function attest(AttestationRequest calldata request) external payable returns (bytes32);
+    function getAttestation(bytes32 uid) external view returns (Attestation memory);
+}
 
-    // // Test addresses
-    // address[] public mainDAOMembers;
-    // address[] public subDAOMembers;
-    // address public proposer;
+contract MockEAS is IMinimalEAS {
+    mapping(bytes32 => Attestation) public attestations;
+    bytes32 public constant LOGBOOK_SCHEMA = 0xb16fa048b0d597f5a821747eba64efa4762ee5143e9a80600d0005386edfc995;
 
-    // // Test values for IPFS image hashes, requested amount, and estimated days
-    // string constant START_IMAGE_HASH = "QmTest123";
-    // string constant PROGRESS_IMAGE_HASH = "QmProgress456";
-    // string constant FINAL_IMAGE_HASH = "QmFinal789";
-    // uint256 constant REQUESTED_AMOUNT = 1 ether;
-    // uint256 constant ESTIMATED_DAYS = 30;
-
-    // // Test values for metadata
-    // string constant TEST_TITLE = "Test Project";
-    // string constant TEST_DESCRIPTION = "Test project description";
-    // string constant TEST_DOCUMENTATION = "ipfs://test-docs";
-
-    // // Declare these as state variables instead
-    // string[] TEST_TAGS;
-    // string[] TEST_EXTERNAL_LINKS;
-
-    // function setUp() public {
-    //     // Setup test addresses for Safe wallet, a proposer, 3 Main DAO members, 2 subDAO members
-    //     gnosisSafe = address(new Safe());
-    //     proposer = address(0x1);
-
-    //     mainDAOMembers = new address[](3);
-    //     mainDAOMembers[0] = address(0x2);
-    //     mainDAOMembers[1] = address(0x3);
-    //     mainDAOMembers[2] = address(0x4);
-
-    //     subDAOMembers = new address[](3);
-    //     subDAOMembers[0] = address(0x5);
-    //     subDAOMembers[1] = address(0x6);
-    //     subDAOMembers[2] = address(0x7);
-
-    //     // Initialize the arrays here
-    //     TEST_TAGS = new string[](2);
-    //     TEST_TAGS[0] = "test";
-    //     TEST_TAGS[1] = "demo";
+    function attest(AttestationRequest calldata request) external payable returns (bytes32) {
+        // Create new attestation
+        Attestation memory newAttestation;
         
-    //     TEST_EXTERNAL_LINKS = new string[](1);
-    //     TEST_EXTERNAL_LINKS[0] = "https://test.com";
+        // Set all fields explicitly
+        newAttestation.schema = request.schema;
+        newAttestation.attester = msg.sender;
+        newAttestation.recipient = request.data.recipient;
+        newAttestation.time = uint64(block.timestamp);
+        newAttestation.revocationTime = 0;
+        newAttestation.expirationTime = request.data.expirationTime;
+        newAttestation.revocable = request.data.revocable;
+        newAttestation.refUID = request.data.refUID;
+        newAttestation.data = request.data.data;
+        
+        // Generate UID after setting other fields
+        newAttestation.uid = keccak256(abi.encodePacked(request.schema, block.timestamp));
+        
+        // Store the attestation
+        attestations[newAttestation.uid] = newAttestation;
+        
+        return newAttestation.uid;
+    }
 
-    //     // Deploy RetroFund
-    //     retroFund = new RetroFund(gnosisSafe, mainDAOMembers, subDAOMembers);
-    // }
+    function getAttestation(bytes32 uid) external view returns (Attestation memory) {
+        return attestations[uid];
+    }
+}
 
-    // // Test proposal submission
-    // // Tests that a proposer can submit a new funding proposal
-    // // Verifies the proposal details are stored correctly
-    // function testSubmitProposal() public {
-    //     vm.startPrank(proposer);
-    //     uint256 proposalId = retroFund.submitProposal(
-    //         START_IMAGE_HASH,
-    //         REQUESTED_AMOUNT,
-    //         ESTIMATED_DAYS,
-    //         TEST_TITLE,
-    //         TEST_DESCRIPTION,
-    //         TEST_TAGS,
-    //         TEST_DOCUMENTATION,
-    //         TEST_EXTERNAL_LINKS
-    //     );
-    //     vm.stopPrank();
+contract ProofOfChangeTest is Test {
+    ProofOfChange public poc;
+    MockEAS public mockEAS;
+    
+    address public constant ADMIN = address(1);
+    address public constant USER = address(2);
+    address public constant SUBDAO_MEMBER = address(3);
+    
+    uint256 public constant INITIAL_FUNDS = 1 ether;
+    
+    event ProjectCreated(
+        bytes32 indexed projectId,
+        address indexed proposer,
+        uint256 requestedFunds,
+        uint256 duration,
+        bytes32 logbookAttestationUID
+    );
 
-    //     RetroFund.Proposal memory proposal = retroFund.proposals(proposalId);
-    //     assertEq(proposal.proposer, proposer);
-    //     assertEq(proposal.requestedAmount, REQUESTED_AMOUNT);
-    //     assertEq(proposal.initialVoting.startImageHash, START_IMAGE_HASH);
-    //     assertEq(proposal.metadata.title, TEST_TITLE);
-    //     assertEq(proposal.metadata.description, TEST_DESCRIPTION);
-    // }
+    function setUp() public {
+        // Deploy mock EAS
+        mockEAS = new MockEAS();
+        
+        // Create initial DAO members array
+        address[] memory initialMembers = new address[](1);
+        initialMembers[0] = ADMIN;
+        
+        // Deploy ProofOfChange
+        poc = new ProofOfChange(address(mockEAS), initialMembers);
+        
+        // Setup test accounts
+        vm.deal(USER, 10 ether);
+        
+        // Add SubDAO member (must be called by ADMIN)
+        vm.prank(ADMIN);
+        poc.addSubDAOMember(SUBDAO_MEMBER, 1); // Add to region 1
+    }
 
-    // // Test main DAO voting
-    // // Verifies that votes are counted correctly and approval flags are set
-    // function testMainDAOVoting() public {
-    //     // Submit proposal
-    //     vm.prank(proposer);
-    //     uint256 proposalId = retroFund.submitProposal(
-    //         START_IMAGE_HASH,
-    //         REQUESTED_AMOUNT,
-    //         ESTIMATED_DAYS,
-    //         TEST_TITLE,
-    //         TEST_DESCRIPTION,
-    //         TEST_TAGS,
-    //         TEST_DOCUMENTATION,
-    //         TEST_EXTERNAL_LINKS
-    //     );
+    /*//////////////////////////////////////////////////////////////
+                        PROJECT CREATION TESTS
+    //////////////////////////////////////////////////////////////*/
 
-    //     // Vote from main DAO members
-    //     for (uint256 i = 0; i < mainDAOMembers.length; i++) {
-    //         vm.prank(mainDAOMembers[i]);
-    //         retroFund.voteFromMainDAO(proposalId, true);
+    function testCreateProject() public {
+        // Set a specific timestamp for consistency
+        vm.warp(1000);
 
-    //         // Debug: Check state after each vote
-    //         RetroFund.Proposal memory proposalState = retroFund.proposals(proposalId);
-    //         console.log("Vote", i + 1);
-    //         console.log("Votes For:", proposalState.initialVoting.mainDAOVotesInFavor);
-    //         console.log("Votes Against:", proposalState.initialVoting.mainDAOVotesAgainst);
-    //         console.log("Approved:", proposalState.initialVoting.mainDAOApproved);
-    //     }
-
-    //     // Final check
-    //     RetroFund.Proposal memory finalState = retroFund.proposals(proposalId);
-    //     assertEq(finalState.initialVoting.mainDAOVotesInFavor, 3);
-    //     assertTrue(finalState.initialVoting.mainDAOApproved);
-    // }
-
-    // // Test sub DAO voting
-    // function testSubDAOVoting() public {
-    //     // Submit proposal
-    //     vm.prank(proposer);
-    //     uint256 proposalId = retroFund.submitProposal(
-    //         START_IMAGE_HASH,
-    //         REQUESTED_AMOUNT,
-    //         ESTIMATED_DAYS,
-    //         TEST_TITLE,
-    //         TEST_DESCRIPTION,
-    //         TEST_TAGS,
-    //         TEST_DOCUMENTATION,
-    //         TEST_EXTERNAL_LINKS
-    //     );
-
-    //     // Vote from sub DAO members
-    //     for (uint256 i = 0; i < subDAOMembers.length; i++) {
-    //         vm.prank(subDAOMembers[i]);
-    //         retroFund.voteFromSubDAO(proposalId, true);
-
-    //         // Debug: Check state after each vote
-    //         RetroFund.Proposal memory proposalState = retroFund.proposals(proposalId);
-    //         console.log("Vote", i + 1);
-    //         console.log("Votes For:", proposalState.initialVoting.subDAOVotesInFavor);
-    //         console.log("Votes Against:", proposalState.initialVoting.subDAOVotesAgainst);
-    //         console.log("Approved:", proposalState.initialVoting.subDAOApproved);
+        // Create initial attestation
+        bytes32 attestationUID = _createMockAttestation();
+        
+        // Verify the attestation was created correctly
+        Attestation memory att = mockEAS.getAttestation(attestationUID);
+        assertEq(att.attester, USER, "Wrong attester");
+        assertEq(att.time, uint64(block.timestamp), "Wrong timestamp");
+        assertEq(att.revocationTime, 0, "Wrong revocation time");
+        assertEq(att.revocable, true, "Wrong revocable status");
+        
+        // Create project data
+        IProofOfChange.ProjectCreationData memory data = IProofOfChange.ProjectCreationData({
+            regionId: 1,
+            requestedFunds: INITIAL_FUNDS,
+            duration: 30 days,
+            logbookAttestationUID: attestationUID
+        });
+        
+        // Create project and capture the event
+        vm.recordLogs();
+        
+        vm.prank(USER);
+        bytes32 projectId = poc.createProject{value: INITIAL_FUNDS}(data);
+        
+        // Get the emitted event
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        
+        // Verify event data
+        assertEq(entries.length > 0, true, "No events emitted");
+        assertEq(entries[0].topics[0], keccak256("ProjectCreated(bytes32,address,uint256,uint256,bytes32)"));
+        assertEq(entries[0].topics[1], bytes32(projectId)); // project ID
+        assertEq(entries[0].topics[2], bytes32(uint256(uint160(USER)))); // proposer address
+        
+        // Decode the non-indexed parameters
+        (uint256 requestedFunds, uint256 duration, bytes32 logbookUID) = 
+            abi.decode(entries[0].data, (uint256, uint256, bytes32));
             
-    //         // Add these debug lines to help identify the issue
-    //         console.log("Total subDAO members:", subDAOMembers.length);
-    //         console.log("Current votes:", proposalState.initialVoting.subDAOVotesInFavor);
-    //     }
-
-    //     // Final check
-    //     RetroFund.Proposal memory finalState = retroFund.proposals(proposalId);
+        assertEq(requestedFunds, INITIAL_FUNDS);
+        assertEq(duration, 30 days);
+        assertEq(logbookUID, attestationUID);
         
-    //     // Add this line to see the final state before assertions
-    //     console.log("Final votes in favor:", finalState.initialVoting.subDAOVotesInFavor);
-    //     console.log("Final approval state:", finalState.initialVoting.subDAOApproved);
+        // Verify project details
+        (
+            address proposer,
+            uint256 storedFunds,
+            uint256 storedDuration,
+            IProofOfChange.VoteType currentPhase,
+            bytes32[] memory attestationUIDs
+        ) = poc.getProjectDetails(projectId);
         
-    //     assertEq(finalState.initialVoting.subDAOVotesInFavor, 3);
-    //     assertTrue(finalState.initialVoting.subDAOApproved);
-    // }
+        assertEq(proposer, USER);
+        assertEq(storedFunds, INITIAL_FUNDS);
+        assertEq(storedDuration, 30 days);
+        assertEq(uint256(currentPhase), uint256(IProofOfChange.VoteType.Initial));
+        assertEq(attestationUIDs[0], attestationUID);
+    }
 
-    // // Test failure cases
+    function testCannotCreateProjectWithoutFunds() public {
+        bytes32 attestationUID = _createMockAttestation();
+        
+        IProofOfChange.ProjectCreationData memory data = IProofOfChange.ProjectCreationData({
+            regionId: 1,
+            requestedFunds: INITIAL_FUNDS,
+            duration: 30 days,
+            logbookAttestationUID: attestationUID
+        });
+        
+        vm.prank(USER);
+        vm.expectRevert("Incorrect funds");
+        poc.createProject(data);
+    }
 
-    // function testFailureUnauthorizedVote() public {
-    //     vm.prank(proposer);
-    //     uint256 proposalId = retroFund.submitProposal(
-    //         START_IMAGE_HASH,
-    //         REQUESTED_AMOUNT,
-    //         ESTIMATED_DAYS,
-    //         TEST_TITLE,
-    //         TEST_DESCRIPTION,
-    //         TEST_TAGS,
-    //         TEST_DOCUMENTATION,
-    //         TEST_EXTERNAL_LINKS
-    //     );
+    /*//////////////////////////////////////////////////////////////
+                            VOTING TESTS
+    //////////////////////////////////////////////////////////////*/
 
-    //     // Try to vote as non-DAO member
-    //     vm.prank(address(0x999));
-    //     // The test will fail if the expected revert message doesn't match exactly with the actual revert message
-    //     vm.expectRevert("Not a member of the main DAO");
-    //     retroFund.voteFromMainDAO(proposalId, true);
-    // }
+    function testVoting() public {
+        bytes32 projectId = _createTestProject();
+        bytes32 attestationUID = _getInitialAttestationUID(projectId);
+        
+        // Initialize voting first with thresholds
+        vm.prank(ADMIN);
+        poc.initializeVoting(attestationUID, 1, 1); // Requires 1 DAO vote and 1 SubDAO vote
+        
+        // DAO member votes
+        vm.prank(ADMIN);
+        poc.vote(attestationUID, uint256(IProofOfChange.MemberType.DAOMember), true);
+        
+        // SubDAO member votes
+        vm.prank(SUBDAO_MEMBER);
+        poc.vote(attestationUID, 1, true); // Vote as SubDAO member for region 1
+        
+        // Warp time to after voting period (7 days + 1 second)
+        vm.warp(block.timestamp + 7 days + 1);
+        
+        // Finalize the vote
+        poc.finalizeVote(attestationUID);
+        
+        // Verify vote status
+        assertTrue(poc.getAttestationApprovalStatus(attestationUID));
+    }
 
-    // function testFailureDoubleVote() public {
-    //     vm.prank(proposer);
-    //     uint256 proposalId = retroFund.submitProposal(
-    //         START_IMAGE_HASH,
-    //         REQUESTED_AMOUNT,
-    //         ESTIMATED_DAYS,
-    //         TEST_TITLE,
-    //         TEST_DESCRIPTION,
-    //         TEST_TAGS,
-    //         TEST_DOCUMENTATION,
-    //         TEST_EXTERNAL_LINKS
-    //     );
+    function testCannotVoteTwice() public {
+        // Create project as USER
+        vm.startPrank(USER);
+        bytes32 logbookUID = _createLogbookAttestation();
+        
+        IProofOfChange.ProjectCreationData memory data = IProofOfChange.ProjectCreationData({
+            duration: 30 days,
+            requestedFunds: 1 ether,
+            regionId: 1,
+            logbookAttestationUID: logbookUID
+        });
+        
+        bytes32 projectId = poc.createProject{value: 1 ether}(data);
+        
+        // Create phase attestation
+        bytes32 phaseUID = poc.createPhaseAttestation(projectId, IProofOfChange.VoteType.Initial);
+        vm.stopPrank();
 
-    //     // Vote once
-    //     vm.prank(mainDAOMembers[0]);
-    //     retroFund.voteFromMainDAO(proposalId, true);
+        // First vote should succeed
+        vm.prank(ADMIN);
+        poc.vote(phaseUID, uint256(IProofOfChange.MemberType.DAOMember), true);
 
-    //     // Try to vote again
-    //     vm.prank(mainDAOMembers[0]);
-    //     vm.expectRevert("Main DAO already approved");
-    //     retroFund.voteFromMainDAO(proposalId, true);
-    // }
+        // Second vote should fail
+        vm.prank(ADMIN);
+        vm.expectRevert(abi.encodeWithSignature("AlreadyVoted()"));
+        poc.vote(phaseUID, uint256(IProofOfChange.MemberType.DAOMember), true);
+    }
 
-    // function testFailureEarlyCompletion() public {
-    //     vm.prank(proposer);
-    //     uint256 proposalId = retroFund.submitProposal(
-    //         START_IMAGE_HASH,
-    //         REQUESTED_AMOUNT,
-    //         ESTIMATED_DAYS,
-    //         TEST_TITLE,
-    //         TEST_DESCRIPTION,
-    //         TEST_TAGS,
-    //         TEST_DOCUMENTATION,
-    //         TEST_EXTERNAL_LINKS
-    //     );
+    /*//////////////////////////////////////////////////////////////
+                        PHASE PROGRESSION TESTS
+    //////////////////////////////////////////////////////////////*/
 
-    //     // Try to declare completion before approval
-    //     vm.prank(proposer);
-    //     vm.expectRevert("revert: Proposal must be approved before completion");
-    //     retroFund.declareProjectCompletion(proposalId, FINAL_IMAGE_HASH);
-    // }
+    function testAdvancePhase() public {
+        // Create test project with region ID 1
+        bytes32 projectId = _createTestProject();
+        
+        // Get initial attestation UID
+        (,,,,bytes32[] memory attestationUIDs) = poc.getProjectDetails(projectId);
+        bytes32 initialAttestationUID = attestationUIDs[uint256(IProofOfChange.VoteType.Initial)];
+        
+        // Initialize voting for initial phase
+        vm.prank(ADMIN);
+        poc.initializeVoting(initialAttestationUID, 2, 3);
+        
+        // DAO members vote
+        vm.prank(ADMIN);
+        poc.vote(initialAttestationUID, 2, true);
+        
+        vm.prank(ADMIN);
+        poc.addDAOMember(address(4));
+        vm.prank(address(4));
+        poc.vote(initialAttestationUID, 2, true);
+        
+        // SubDAO members vote
+        vm.prank(SUBDAO_MEMBER);
+        poc.vote(initialAttestationUID, 1, true);
+        
+        vm.prank(ADMIN);
+        poc.addSubDAOMember(address(5), 1);
+        vm.prank(address(5));
+        poc.vote(initialAttestationUID, 1, true);
+        
+        vm.prank(ADMIN);
+        poc.addSubDAOMember(address(6), 1);
+        vm.prank(address(6));
+        poc.vote(initialAttestationUID, 1, true);
+        
+        // Warp time to after voting period (7 days + 1 second)
+        vm.warp(block.timestamp + 7 days + 1);
+        
+        // Finalize vote
+        poc.finalizeVote(initialAttestationUID);
+        
+        // Verify attestation is approved
+        assertTrue(poc.getAttestationApprovalStatus(initialAttestationUID), "Attestation not approved");
+        
+        // Advance to progress phase using the project proposer
+        vm.prank(USER);
+        poc.advanceToNextPhase(projectId);
+        
+        // Verify phase advanced
+        (,,,IProofOfChange.VoteType currentPhase,) = poc.getProjectDetails(projectId);
+        assertEq(uint256(currentPhase), uint256(IProofOfChange.VoteType.Progress));
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            HELPER FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+
+    function _createMockAttestation() internal returns (bytes32) {
+        // Prepare the attestation data with fixed values
+        bytes memory attestationData = abi.encode(
+            uint256(1),  // Fixed value instead of block.timestamp
+            "test_event",
+            "test_location",
+            "test_memo"
+        );
+        
+        AttestationRequest memory request = AttestationRequest({
+            schema: mockEAS.LOGBOOK_SCHEMA(),
+            data: AttestationRequestData({
+                recipient: address(0),
+                expirationTime: 0,
+                revocable: true,
+                refUID: bytes32(0),
+                data: attestationData,
+                value: 0
+            })
+        });
+        
+        // Set msg.sender to USER before calling attest
+        vm.startPrank(USER);
+        bytes32 uid = mockEAS.attest(request);
+        
+        // Verify the attestation was created correctly
+        Attestation memory att = mockEAS.getAttestation(uid);
+        require(att.attester == USER, "Wrong attester");
+        require(att.revocationTime == 0, "Attestation should not be revoked");
+        require(att.revocable == true, "Attestation should be revocable");
+        
+        vm.stopPrank();
+        
+        return uid;
+    }
+
+    function _createTestProject() internal returns (bytes32) {
+        bytes32 attestationUID = _createMockAttestation();
+        
+        IProofOfChange.ProjectCreationData memory data = IProofOfChange.ProjectCreationData({
+            regionId: 1,
+            requestedFunds: INITIAL_FUNDS,
+            duration: 30 days,
+            logbookAttestationUID: attestationUID
+        });
+        
+        vm.prank(USER);
+        return poc.createProject{value: INITIAL_FUNDS}(data);
+    }
+
+    function _getInitialAttestationUID(bytes32 projectId) internal view returns (bytes32) {
+        (,,,,bytes32[] memory attestationUIDs) = poc.getProjectDetails(projectId);
+        return attestationUIDs[0];
+    }
+
+    function _approvePhase(bytes32 projectId, IProofOfChange.VoteType phase) internal {
+        // Get project details to know the region
+        (,,,, bytes32[] memory attestationUIDs) = poc.getProjectDetails(projectId);
+        
+        // Create phase attestation if it doesn't exist
+        bytes32 attestationUID;
+        if (phase == IProofOfChange.VoteType.Initial) {
+            attestationUID = attestationUIDs[uint256(phase)];
+        } else {
+            vm.prank(USER);
+            attestationUID = poc.createPhaseAttestation(projectId, phase);
+        }
+        
+        // Initialize voting for both DAO and SubDAO members
+        vm.prank(ADMIN);
+        poc.initializeVoting(attestationUID, 2, 3); // 2 DAO votes, 3 SubDAO votes required
+        
+        // First DAO member vote
+        vm.prank(ADMIN);
+        poc.vote(attestationUID, uint256(IProofOfChange.MemberType.DAOMember), true);
+        
+        // Second DAO member vote
+        vm.prank(ADMIN);
+        poc.addDAOMember(address(4));
+        vm.prank(address(4));
+        poc.vote(attestationUID, uint256(IProofOfChange.MemberType.DAOMember), true);
+        
+        // SubDAO members vote
+        vm.prank(SUBDAO_MEMBER);
+        poc.vote(attestationUID, 1, true);
+        
+        vm.prank(ADMIN);
+        poc.addSubDAOMember(address(5), 1);
+        vm.prank(address(5));
+        poc.vote(attestationUID, 1, true);
+        
+        vm.prank(ADMIN);
+        poc.addSubDAOMember(address(6), 1);
+        vm.prank(address(6));
+        poc.vote(attestationUID, 1, true);
+        
+        // Warp time to after voting period
+        vm.warp(block.timestamp + 7 days + 1);
+        
+        // Finalize the vote
+        poc.finalizeVote(attestationUID);
+        
+        // Verify state change
+        vm.prank(ADMIN);
+        poc.verifyStateChange(projectId, phase, true);
+        
+        // Advance to next phase if needed
+        if (phase != IProofOfChange.VoteType.Completion) {
+            vm.prank(USER);
+            poc.advanceToNextPhase(projectId);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            FUND RELEASE TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function testReleasePhaseFunds() public {
+        bytes32 projectId = _createTestProject();
+        
+        // Complete all phases
+        _approvePhase(projectId, IProofOfChange.VoteType.Initial);
+        _approvePhase(projectId, IProofOfChange.VoteType.Progress);
+        _approvePhase(projectId, IProofOfChange.VoteType.Completion);
+        
+        // Record initial balance
+        uint256 initialBalance = USER.balance;
+        
+        // Mark project as completed (now should work since all phases are approved)
+        vm.prank(ADMIN);
+        poc.updateProjectStatus(projectId, IProofOfChange.ProjectStatus.Completed);
+        
+        // Release funds for initial phase
+        poc.releasePhaseFunds(projectId, IProofOfChange.VoteType.Initial);
+        
+        // Verify funds released
+        (uint256 initialWeight,,) = poc.getCurrentPhaseWeights(projectId);
+        uint256 expectedRelease = (INITIAL_FUNDS * initialWeight) / 100;
+        assertEq(USER.balance, initialBalance + expectedRelease);
+        assertTrue(poc.phaseFundsReleased(projectId, IProofOfChange.VoteType.Initial));
+    }
+
+    function testCannotReleaseFundsTwice() public {
+        // Add DAO members
+        vm.prank(ADMIN);
+        poc.addDAOMember(USER);
+        vm.prank(ADMIN);
+        poc.addDAOMember(ADMIN);
+
+        // Add subDAO members for region 1
+        address subDao1 = address(0x3333);
+        address subDao2 = address(0x4444);
+        vm.prank(ADMIN);
+        poc.addSubDAOMember(subDao1, 1);
+        vm.prank(ADMIN);
+        poc.addSubDAOMember(subDao2, 1);
+        
+        // Create initial logbook attestation
+        vm.startPrank(USER);
+        bytes32 logbookUID = _createLogbookAttestation();
+        
+        // Create project
+        IProofOfChange.ProjectCreationData memory data = IProofOfChange.ProjectCreationData({
+            duration: 30 days,
+            requestedFunds: 1 ether,
+            regionId: 1,
+            logbookAttestationUID: logbookUID
+        });
+        
+        bytes32 projectId = poc.createProject{value: 1 ether}(data);
+        
+        // Initial phase attestation
+        bytes32 initialPhaseUID = poc.createPhaseAttestation(projectId, IProofOfChange.VoteType.Initial);
+        vm.stopPrank();
+        
+        // DAO votes
+        vm.prank(ADMIN);
+        poc.vote(initialPhaseUID, 2, true);
+        vm.prank(USER);
+        poc.vote(initialPhaseUID, 2, true);
+        vm.prank(subDao1);
+        poc.vote(initialPhaseUID, 1, true);
+        vm.prank(subDao2);
+        poc.vote(initialPhaseUID, 1, true);
+        
+        vm.warp(block.timestamp + 7 days + 1);
+        poc.finalizeVote(initialPhaseUID);
+        
+        // Verify state change
+        vm.prank(ADMIN);
+        poc.verifyStateChange(projectId, IProofOfChange.VoteType.Initial, true);
+        
+        // Progress phase
+        vm.startPrank(USER);
+        poc.advanceToNextPhase(projectId);
+        bytes32 progressPhaseUID = poc.createPhaseAttestation(projectId, IProofOfChange.VoteType.Progress);
+        vm.stopPrank();
+        
+        // Progress phase voting
+        vm.prank(ADMIN);
+        poc.vote(progressPhaseUID, 2, true);
+        vm.prank(USER);
+        poc.vote(progressPhaseUID, 2, true);
+        vm.prank(subDao1);
+        poc.vote(progressPhaseUID, 1, true);
+        vm.prank(subDao2);
+        poc.vote(progressPhaseUID, 1, true);
+        
+        vm.warp(block.timestamp + 7 days + 1);
+        poc.finalizeVote(progressPhaseUID);
+        
+        vm.prank(ADMIN);
+        poc.verifyStateChange(projectId, IProofOfChange.VoteType.Progress, true);
+        
+        // Completion phase
+        vm.startPrank(USER);
+        poc.advanceToNextPhase(projectId);
+        bytes32 completionPhaseUID = poc.createPhaseAttestation(projectId, IProofOfChange.VoteType.Completion);
+        vm.stopPrank();
+        
+        // Completion phase voting
+        vm.prank(ADMIN);
+        poc.vote(completionPhaseUID, 2, true);
+        vm.prank(USER);
+        poc.vote(completionPhaseUID, 2, true);
+        vm.prank(subDao1);
+        poc.vote(completionPhaseUID, 1, true);
+        vm.prank(subDao2);
+        poc.vote(completionPhaseUID, 1, true);
+        
+        vm.warp(block.timestamp + 7 days + 1);
+        poc.finalizeVote(completionPhaseUID);
+        
+        vm.prank(ADMIN);
+        poc.verifyStateChange(projectId, IProofOfChange.VoteType.Completion, true);
+        
+        // Mark as completed
+        vm.prank(ADMIN);
+        poc.updateProjectStatus(projectId, IProofOfChange.ProjectStatus.Completed);
+        
+        // Release funds for Initial phase
+        poc.releasePhaseFunds(projectId, IProofOfChange.VoteType.Initial);
+        
+        // Try to release funds again (should fail)
+        vm.expectRevert(IProofOfChange.FundsAlreadyReleased.selector);
+        poc.releasePhaseFunds(projectId, IProofOfChange.VoteType.Initial);
+    }
+
+    function _createLogbookAttestation() internal returns (bytes32) {
+        bytes32 schema = mockEAS.LOGBOOK_SCHEMA();
+        bytes memory data = abi.encode(
+            1,                  // regionId
+            "test_event",      // event
+            "test_location",   // location
+            "test_memo"        // memo
+        );
+        
+        AttestationRequest memory request = AttestationRequest({
+            schema: schema,
+            data: AttestationRequestData({
+                recipient: address(0),
+                expirationTime: 0,
+                revocable: true,
+                refUID: bytes32(0),
+                data: data,
+                value: 0
+            })
+        });
+        
+        return mockEAS.attest(request);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            EMERGENCY TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function testEmergencyProjectFreeze() public {
+        bytes32 projectId = _createTestProject();
+        
+        // Complete initial phase approval first
+        (,,,,bytes32[] memory attestationUIDs) = poc.getProjectDetails(projectId);
+        bytes32 initialAttestationUID = attestationUIDs[uint256(IProofOfChange.VoteType.Initial)];
+        
+        // Initialize and complete voting
+        vm.prank(ADMIN);
+        poc.initializeVoting(initialAttestationUID, 2, 2);
+        
+        vm.prank(ADMIN);
+        poc.vote(initialAttestationUID, 2, true);
+        
+        vm.prank(ADMIN);
+        poc.addDAOMember(address(4));
+        vm.prank(address(4));
+        poc.vote(initialAttestationUID, 2, true);
+        
+        // Wait for voting period to end
+        vm.warp(block.timestamp + 7 days + 1);
+        poc.finalizeVote(initialAttestationUID);
+        
+        // Emergency freeze
+        vm.prank(ADMIN);
+        poc.emergencyProjectAction(projectId, 7 days);
+        
+        // Verify frozen status
+        assertTrue(poc.projectFrozenUntil(projectId) > block.timestamp);
+        
+        // Get the freeze end time for the error check
+        uint256 freezeEndTime = poc.projectFrozenUntil(projectId);
+        
+        // Use the exact error selector and encoding from the trace
+        bytes memory expectedError = abi.encodeWithSelector(
+            bytes4(0xc3fd1c80),  // ProjectIsFrozen selector
+            projectId,
+            freezeEndTime
+        );
+        vm.expectRevert(expectedError);
+        
+        vm.prank(USER);
+        poc.advanceToNextPhase(projectId);
+    }
+
+    function testEmergencyPause() public {
+        // Emergency pause by admin
+        vm.prank(ADMIN);
+        poc.emergencyPause(IProofOfChange.FunctionGroup.ProjectCreation);
+        
+        // Verify pause status
+        (bool isPaused, uint256 pauseEnds, bool isPermaPaused) = poc.pauseConfigs(IProofOfChange.FunctionGroup.ProjectCreation);
+        console.log("Pause Status:");
+        console.log("isPaused:", isPaused);
+        console.log("pauseEnds:", pauseEnds);
+        console.log("current timestamp:", block.timestamp);
+        console.log("isPermaPaused:", isPermaPaused);
+        
+        assertTrue(isPaused);
+        assertEq(pauseEnds, block.timestamp + poc.EMERGENCY_PAUSE_DURATION());
+        
+        // Create mock attestation
+        bytes32 attestationUID = _createMockAttestation();
+        
+        // Attempt action while paused
+        IProofOfChange.ProjectCreationData memory data = IProofOfChange.ProjectCreationData({
+            regionId: 1,
+            requestedFunds: INITIAL_FUNDS,
+            duration: 30 days,
+            logbookAttestationUID: attestationUID
+        });
+        
+        // Make sure we're still in the pause period
+        assertLt(block.timestamp, pauseEnds, "Should still be in pause period");
+        
+        // Attempt to create project while paused (should fail)
+        vm.prank(USER);
+        
+        // Update to match the actual error being thrown
+        vm.expectRevert(abi.encodeWithSelector(
+            IProofOfChange.FunctionCurrentlyPaused.selector,
+            IProofOfChange.FunctionGroup.ProjectCreation,
+            pauseEnds
+        ));
+        
+        poc.createProject{value: INITIAL_FUNDS}(data);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            ADMIN FUNCTION TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function testAddDAOMember() public {
+        address newMember = address(4);
+        
+        vm.prank(ADMIN);
+        poc.addDAOMember(newMember);
+        
+        assertEq(uint256(poc.members(newMember)), uint256(IProofOfChange.MemberType.DAOMember));
+    }
+
+    function testUpdateMember() public {
+        address member = address(4);
+        
+        // Add as DAO member first
+        vm.prank(ADMIN);
+        poc.addDAOMember(member);
+        
+        // Update to SubDAO member with regionId
+        vm.prank(ADMIN);
+        poc.updateMember(member, IProofOfChange.MemberType.SubDAOMember, 1);
+        
+        assertEq(uint256(poc.members(member)), uint256(IProofOfChange.MemberType.SubDAOMember));
+        assertTrue(poc.regionSubDAOMembers(1, member));
+    }
 }

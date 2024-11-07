@@ -17,34 +17,66 @@ contract MockEAS is IMinimalEAS {
     mapping(bytes32 => Attestation) public attestations;
     bytes32 public constant LOGBOOK_SCHEMA = 0xb16fa048b0d597f5a821747eba64efa4762ee5143e9a80600d0005386edfc995;
 
+    // Add helper function for direct attestation creation
+    function createMockAttestation(address creator, bytes32 logbookUID) external returns (bytes32) {
+        bytes memory mockData = abi.encode(
+            uint256(block.timestamp),
+            "Mock Location",
+            "Mock Description"
+        );
+
+        bytes32 uid = keccak256(abi.encodePacked(
+            block.timestamp,
+            creator,
+            mockData
+        ));
+
+        attestations[uid] = Attestation({
+            uid: uid,
+            schema: LOGBOOK_SCHEMA,
+            attester: creator,
+            recipient: creator,
+            time: uint64(block.timestamp),
+            revocationTime: 0,
+            expirationTime: type(uint64).max,
+            revocable: true,
+            refUID: logbookUID,
+            data: mockData
+        });
+
+        return uid;
+    }
+
     function attest(AttestationRequest calldata request) external payable returns (bytes32) {
-        // Create new attestation
-        Attestation memory newAttestation;
-        
-        // Set all fields explicitly
-        newAttestation.schema = request.schema;
-        newAttestation.attester = msg.sender;
-        newAttestation.recipient = request.data.recipient;
-        newAttestation.time = uint64(block.timestamp);
-        newAttestation.revocationTime = 0;
-        newAttestation.expirationTime = request.data.expirationTime;
-        newAttestation.revocable = request.data.revocable;
-        newAttestation.refUID = request.data.refUID;
-        newAttestation.data = request.data.data;
-        
-        // Generate UID after setting other fields
-        newAttestation.uid = keccak256(abi.encodePacked(request.schema, block.timestamp));
-        
-        // Store the attestation
-        attestations[newAttestation.uid] = newAttestation;
-        
-        return newAttestation.uid;
+        bytes32 uid = keccak256(abi.encodePacked(
+            block.timestamp,
+            msg.sender,
+            request.data.data
+        ));
+
+        attestations[uid] = Attestation({
+            uid: uid,
+            schema: request.schema,
+            attester: msg.sender,
+            recipient: request.data.recipient,
+            time: uint64(block.timestamp),
+            revocationTime: 0,
+            expirationTime: request.data.expirationTime,
+            revocable: request.data.revocable,
+            refUID: request.data.refUID,
+            data: request.data.data
+        });
+
+        return uid;
     }
 
     function getAttestation(bytes32 uid) external view returns (Attestation memory) {
-        return attestations[uid];
+        Attestation memory att = attestations[uid];
+        require(att.attester != address(0), "Attestation not found");
+        return att;
     }
 }
+
 
 contract ProofOfChangeTest is Test {
     ProofOfChange public poc;

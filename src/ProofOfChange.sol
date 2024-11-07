@@ -11,6 +11,7 @@ import "@openzeppelin/contracts/utils/Strings.sol";
  * @notice A decentralized protocol for managing project attestations and milestone-based funding
  * @dev Implements EAS schema resolver for attestations and includes reentrancy protection
  */
+
 contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     using Strings for uint256;
 
@@ -20,22 +21,22 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
     /// @notice Schema ID for project logbook attestations
     bytes32 public constant LOGBOOK_SCHEMA = 0xb16fa048b0d597f5a821747eba64efa4762ee5143e9a80600d0005386edfc995;
-    
+
     /// @notice Duration of emergency pause (3 days)
     uint256 public constant EMERGENCY_PAUSE_DURATION = 3 days;
-    
+
     /// @notice Duration of standard pause (14 days)
     uint256 public constant STANDARD_PAUSE_DURATION = 14 days;
-    
+
     /// @notice Required waiting period for timelocked operations
     uint256 public constant TIMELOCK_PERIOD = 24 hours;
-    
+
     /// @notice Minimum number of emergency admins required for emergency actions
     uint256 public constant EMERGENCY_THRESHOLD = 2;
 
     /// @notice Reference to the Ethereum Attestation Service contract
     IEAS private immutable eas;
-    
+
     /// @notice Minimum votes required to pause contract functions
     uint256 public immutable minimumPauseVotes;
 
@@ -139,7 +140,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         eas = IEAS(easRegistry);
         minimumPauseVotes = (initialDAOMembers.length * 2) / 3; // 66% of initial DAO members
         votingPeriod = 7 days; // Set initial voting period to 7 days
-        
+
         for (uint256 i = 0; i < initialDAOMembers.length; i++) {
             members[initialDAOMembers[i]] = IProofOfChange.MemberType.DAOMember;
             emergencyAdmins.push(initialDAOMembers[i]);
@@ -147,9 +148,9 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
         // Set default weights
         phaseWeights = PhaseWeights({
-            initialWeight: 20,      // 20%
-            progressWeight: 50,     // 50%
-            completionWeight: 30,   // 30%
+            initialWeight: 20, // 20%
+            progressWeight: 50, // 50%
+            completionWeight: 30, // 30%
             lastUpdated: block.timestamp
         });
     }
@@ -163,7 +164,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @dev Automatically lifts pause if duration has expired
     modifier whenNotPaused(IProofOfChange.FunctionGroup group) {
         PauseConfig storage config = pauseConfigs[group];
-        
+
         if (config.isPaused) {
             // Check if pause has expired and can be automatically lifted
             if (config.pauseEnds != 0 && block.timestamp >= config.pauseEnds) {
@@ -186,10 +187,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         }
 
         if (block.timestamp < pendingOperations[operationId]) {
-            revert IProofOfChange.TimelockNotExpired(
-                operationId,
-                pendingOperations[operationId]
-            );
+            revert IProofOfChange.TimelockNotExpired(operationId, pendingOperations[operationId]);
         }
 
         delete pendingOperations[operationId];
@@ -205,19 +203,16 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         }
 
         emergencyApprovals[operationId][msg.sender] = true;
-        
+
         uint256 approvalCount = 0;
         for (uint256 i = 0; i < emergencyAdmins.length; i++) {
             if (emergencyApprovals[operationId][emergencyAdmins[i]]) {
                 approvalCount++;
             }
         }
-        
+
         if (approvalCount < EMERGENCY_THRESHOLD) {
-            revert IProofOfChange.InsufficientEmergencyApprovals(
-                approvalCount,
-                EMERGENCY_THRESHOLD
-            );
+            revert IProofOfChange.InsufficientEmergencyApprovals(approvalCount, EMERGENCY_THRESHOLD);
         }
         _;
     }
@@ -279,7 +274,13 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @param data The project creation data struct
     /// @return projectId The unique identifier of the created project
     /// @dev Requires funds to be sent equal to requestedFunds
-    function createProject(ProjectCreationData memory data) external payable nonReentrant whenNotPaused(FunctionGroup.ProjectCreation) returns (bytes32) {
+    function createProject(ProjectCreationData memory data)
+        external
+        payable
+        nonReentrant
+        whenNotPaused(FunctionGroup.ProjectCreation)
+        returns (bytes32)
+    {
         // Validate inputs
         require(msg.value == data.requestedFunds, "Incorrect funds");
         require(data.duration >= 1 days && data.duration <= 365 days, "Invalid duration");
@@ -289,13 +290,27 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         require(attestation.schema == LOGBOOK_SCHEMA, "Invalid attestation");
 
         // Generate project ID
-        bytes32 projectId = keccak256(abi.encodePacked(
-            msg.sender, 
-            data.logbookAttestationUID, 
-            block.timestamp
-        ));
+        bytes32 projectId = keccak256(abi.encodePacked(msg.sender, data.logbookAttestationUID, block.timestamp));
+
+        // StateProof storage stateProof = StateProof({
+        //     attestationUID: data.logbookAttestationUID,
+        //     timestamp: uint64(block.timestamp),
+        //     verified: false
+        // });
 
         // Create project
+
+        // projects[projectId] = Project({
+        //     proposer: msg.sender,
+        //     regionId: data.regionId,
+        //     requestedFunds: data.requestedFunds,
+        //     expectedDuration: data.duration,
+        //     status: ProjectStatus.Pending,
+        //     currentPhase: VoteType.Initial,
+        //     fundsReleased: false,
+        //     createdAt: uint64(block.timestamp),
+        //     stateProofs: [stateProof]
+        // });        
         Project storage newProject = projects[projectId];
         newProject.proposer = msg.sender;
         newProject.regionId = data.regionId;
@@ -313,13 +328,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             verified: false
         });
 
-        emit ProjectCreated(
-            projectId,
-            msg.sender,
-            data.requestedFunds,
-            data.duration,
-            data.logbookAttestationUID
-        );
+        emit ProjectCreated(projectId, msg.sender, data.requestedFunds, data.duration, data.logbookAttestationUID);
 
         return projectId;
     }
@@ -361,18 +370,18 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         Project storage project = projects[projectId];
         if (project.proposer == address(0)) revert ProjectNotFound();
         if (msg.sender != project.proposer) revert UnauthorizedProposer();
-        
+
         // Check that we're in completion phase
         if (project.currentPhase != VoteType.Completion) revert InvalidPhase();
-        
+
         // Check that completion vote is approved
         StateProof storage proof = project.stateProofs[VoteType.Completion];
         Vote storage completionVote = attestationVotes[proof.attestationUID];
         if (completionVote.result != VoteResult.Approved) revert PhaseNotApproved();
-        
+
         // Mark project as complete
         project.status = ProjectStatus.Completed;
-        
+
         emit ProjectCompleted(projectId, block.timestamp);
     }
 
@@ -381,33 +390,33 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @param newStatus The new status to set
     /// @dev Only callable by DAO members
     function updateProjectStatus(bytes32 projectId, ProjectStatus newStatus) external {
-        if (members[msg.sender] != MemberType.DAOMember) 
+        if (members[msg.sender] != MemberType.DAOMember) {
             revert UnauthorizedDAO();
-        
+        }
+
         Project storage project = projects[projectId];
         if (project.proposer == address(0)) revert ProjectNotFound();
-        
+
         // Validate status transitions
         if (newStatus == ProjectStatus.Completed) {
             StateProof storage proof = project.stateProofs[VoteType.Completion];
-            if (project.currentPhase != VoteType.Completion || 
-                !_isApproved(proof.attestationUID)) 
+            if (project.currentPhase != VoteType.Completion || !_isApproved(proof.attestationUID)) {
                 revert ProjectNotCompletable();
+            }
         }
 
         ProjectStatus oldStatus = project.status;
         project.status = newStatus;
-        
+
         emit ProjectAction(
-            projectId, 
-            msg.sender, 
-            ProjectActionType.StatusUpdated, 
-            string(abi.encodePacked(
-                "Status changed from ", 
-                uint256(oldStatus).toString(), 
-                " to ", 
-                uint256(newStatus).toString()
-            ))
+            projectId,
+            msg.sender,
+            ProjectActionType.StatusUpdated,
+            string(
+                abi.encodePacked(
+                    "Status changed from ", uint256(oldStatus).toString(), " to ", uint256(newStatus).toString()
+                )
+            )
         );
     }
 
@@ -423,31 +432,28 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     function updateMilestone(bytes32 projectId, string calldata milestone, bool completed) external {
         Project storage project = projects[projectId];
         if (project.proposer != msg.sender) revert UnauthorizedProposer();
-        
+
         PhaseProgress storage progress = project.phaseProgress[project.currentPhase];
         bool milestoneExists = false;
-        
-        for (uint i = 0; i < progress.milestones.length; i++) {
+
+        for (uint256 i = 0; i < progress.milestones.length; i++) {
             if (keccak256(bytes(progress.milestones[i])) == keccak256(bytes(milestone))) {
                 milestoneExists = true;
                 break;
             }
         }
-        
+
         if (!milestoneExists) revert InvalidMilestone();
-        
+
         progress.completedMilestones[milestone] = completed;
-        
+
         emit MilestoneUpdated(projectId, project.currentPhase, milestone, completed);
     }
 
     /// @notice Submits progress update for a project phase
     /// @param projectId The ID of the project
     /// @param progressAttestationUID The attestation UID for the progress update
-    function submitProgress(
-        bytes32 projectId,
-        bytes32 progressAttestationUID
-    ) external nonReentrant {
+    function submitProgress(bytes32 projectId, bytes32 progressAttestationUID) external nonReentrant {
         Project storage project = projects[projectId];
         require(msg.sender == project.proposer, "Not proposer");
         require(project.currentPhase == VoteType.Progress, "Wrong phase");
@@ -455,11 +461,8 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         Attestation memory attestation = eas.getAttestation(progressAttestationUID);
         require(attestation.schema == LOGBOOK_SCHEMA, "Invalid attestation");
 
-        project.stateProofs[VoteType.Progress] = StateProof({
-            attestationUID: progressAttestationUID,
-            timestamp: uint64(block.timestamp),
-            verified: false
-        });
+        project.stateProofs[VoteType.Progress] =
+            StateProof({attestationUID: progressAttestationUID, timestamp: uint64(block.timestamp), verified: false});
 
         emit ProgressSubmitted(projectId, progressAttestationUID);
     }
@@ -468,10 +471,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @param projectId The ID of the project
     /// @param completionAttestationUID The attestation UID for the completion update
     /// @dev Only callable by project proposer during completion phase
-    function submitCompletion(
-        bytes32 projectId,
-        bytes32 completionAttestationUID
-    ) external nonReentrant {
+    function submitCompletion(bytes32 projectId, bytes32 completionAttestationUID) external nonReentrant {
         Project storage project = projects[projectId];
         require(msg.sender == project.proposer, "Not proposer");
         require(project.currentPhase == VoteType.Completion, "Wrong phase");
@@ -479,24 +479,20 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         Attestation memory attestation = eas.getAttestation(completionAttestationUID);
         require(attestation.schema == LOGBOOK_SCHEMA, "Invalid attestation");
 
-        project.stateProofs[VoteType.Completion] = StateProof({
-            attestationUID: completionAttestationUID,
-            timestamp: uint64(block.timestamp),
-            verified: false
-        });
+        project.stateProofs[VoteType.Completion] =
+            StateProof({attestationUID: completionAttestationUID, timestamp: uint64(block.timestamp), verified: false});
 
         emit CompletionSubmitted(projectId, completionAttestationUID);
     }
 
-
     function _initializePhaseProgress(bytes32 projectId, VoteType phase, string[] memory milestones) internal {
         Project storage project = projects[projectId];
         PhaseProgress storage progress = project.phaseProgress[phase];
-        
+
         progress.startTime = uint64(block.timestamp);
         progress.targetEndTime = uint64(block.timestamp + project.expectedDuration);
         progress.isComplete = false;
-        
+
         for (uint256 i = 0; i < milestones.length; i++) {
             progress.milestones.push(milestones[i]);
             progress.completedMilestones[milestones[i]] = false;
@@ -506,7 +502,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     function _areMilestonesComplete(bytes32 projectId, VoteType phase) internal view returns (bool) {
         Project storage project = projects[projectId];
         PhaseProgress storage progress = project.phaseProgress[phase];
-        
+
         for (uint256 i = 0; i < progress.milestones.length; i++) {
             if (!progress.completedMilestones[progress.milestones[i]]) {
                 return false;
@@ -517,12 +513,13 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
     function calculateOverallCompletion(bytes32 projectId) public view returns (uint256) {
         ProjectProgress storage progress = projectProgress[projectId];
-        
-        uint256 overallCompletion = 
-            (progress.phaseCompletionPercentages[IProofOfChange.VoteType.Initial] * phaseWeights.initialWeight +
-            progress.phaseCompletionPercentages[IProofOfChange.VoteType.Progress] * phaseWeights.progressWeight +
-            progress.phaseCompletionPercentages[IProofOfChange.VoteType.Completion] * phaseWeights.completionWeight) / 100;
-            
+
+        uint256 overallCompletion = (
+            progress.phaseCompletionPercentages[IProofOfChange.VoteType.Initial] * phaseWeights.initialWeight
+                + progress.phaseCompletionPercentages[IProofOfChange.VoteType.Progress] * phaseWeights.progressWeight
+                + progress.phaseCompletionPercentages[IProofOfChange.VoteType.Completion] * phaseWeights.completionWeight
+        ) / 100;
+
         return overallCompletion;
     }
 
@@ -544,9 +541,9 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         // Create attestation data
         bytes memory attestationData = abi.encode(
             projectId,
-            "",     // Empty string for removed name field
-            "",     // Empty string for removed description field
-            "",     // Empty string for removed location field
+            "", // Empty string for removed name field
+            "", // Empty string for removed description field
+            "", // Empty string for removed location field
             project.regionId,
             phase
         );
@@ -556,66 +553,52 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             AttestationRequest({
                 schema: LOGBOOK_SCHEMA,
                 data: AttestationRequestData({
-                    recipient: address(0),    // No specific recipient
-                    expirationTime: 0,        // No expiration
+                    recipient: address(0), // No specific recipient
+                    expirationTime: 0, // No expiration
                     revocable: true,
-                    refUID: bytes32(0),       // No reference
+                    refUID: bytes32(0), // No reference
                     data: attestationData,
-                    value: 0                  // No value being sent
+                    value: 0 // No value being sent
                 })
             })
         );
 
         // Store in stateProofs
-        project.stateProofs[phase] = StateProof({
-            attestationUID: attestationUID,
-            timestamp: uint64(block.timestamp),
-            verified: false
-        });
+        project.stateProofs[phase] =
+            StateProof({attestationUID: attestationUID, timestamp: uint64(block.timestamp), verified: false});
 
         emit IProofOfChange.PhaseAttestationCreated(projectId, phase, attestationUID);
 
         // Change from external call (this.initializeVoting) to internal call
         _initializeVoting(
             attestationUID,
-            3,  // Required DAO votes
-            3   // Required subDAO votes
+            3, // Required DAO votes
+            3 // Required subDAO votes
         );
 
         return attestationUID;
     }
 
     // Keep the external function to satisfy the interface
-    function initializeVoting(
-        bytes32 attestationUID, 
-        uint256 daoVotesNeeded, 
-        uint256 subDaoVotesNeeded
-    ) external {
+    function initializeVoting(bytes32 attestationUID, uint256 daoVotesNeeded, uint256 subDaoVotesNeeded) external {
         if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) revert UnauthorizedDAO();
         _initializeVoting(attestationUID, daoVotesNeeded, subDaoVotesNeeded);
     }
 
     // Add internal version for use within contract
-    function _initializeVoting(
-        bytes32 attestationUID, 
-        uint256 daoVotesNeeded, 
-        uint256 subDaoVotesNeeded
-    ) internal {
+    function _initializeVoting(bytes32 attestationUID, uint256 daoVotesNeeded, uint256 subDaoVotesNeeded) internal {
         Vote storage voteData = attestationVotes[attestationUID];
         if (voteData.daoVotesRequired != 0) revert InvalidVoteState();
-        
+
         // Verify attestation validity
         Attestation memory attestation = eas.getAttestation(attestationUID);
         if (attestation.schema != LOGBOOK_SCHEMA) revert InvalidAttestation();
-        
-        voteData.daoVotesRequired = 0;  // No minimum required
-        voteData.subDaoVotesRequired = 0;  // No minimum required
+
+        voteData.daoVotesRequired = 0; // No minimum required
+        voteData.subDaoVotesRequired = 0; // No minimum required
         voteData.votingEnds = uint64(block.timestamp + votingPeriod);
-        
-        emit VotingInitialized(
-            attestationUID, 
-            voteData.votingEnds
-        );
+
+        emit VotingInitialized(attestationUID, voteData.votingEnds);
     }
 
     /// @notice Cast a vote on an attestation
@@ -624,20 +607,20 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @param approve True to vote in favor, false against
     function vote(bytes32 attestationUID, uint256 regionId, bool approve) external {
         Vote storage voteData = attestationVotes[attestationUID];
-        
+
         // Check if voting period has ended
         if (block.timestamp > voteData.votingEnds) {
             revert VotingPeriodEnded();
         }
-        
+
         // Validate voter eligibility
         IProofOfChange.MemberType memberType = members[msg.sender];
         if (memberType == IProofOfChange.MemberType.NonMember) revert UnauthorizedDAO();
         if (voteData.hasVoted[msg.sender]) revert AlreadyVoted();
-        
+
         // Record vote
         voteData.hasVoted[msg.sender] = true;
-        
+
         // Handle vote based on member type
         if (memberType == IProofOfChange.MemberType.SubDAOMember) {
             if (!regionSubDAOMembers[regionId][msg.sender]) {
@@ -655,7 +638,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
                 voteData.daoVotesAgainst++;
             }
         }
-        
+
         emit VoteCast(attestationUID, msg.sender, memberType);
     }
 
@@ -663,7 +646,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @param attestationUID The attestation to finalize
     function finalizeVote(bytes32 attestationUID) external {
         Vote storage voteData = attestationVotes[attestationUID];
-        
+
         // Check if voting can be finalized
         if (block.timestamp <= voteData.votingEnds) {
             revert VotingPeriodNotEnded();
@@ -675,7 +658,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         // Determine result by simple majority
         bool daoApproved = voteData.daoVotesFor > voteData.daoVotesAgainst;
         bool subDaoApproved = voteData.subDaoVotesFor > voteData.subDaoVotesAgainst;
-        
+
         // Both groups must approve by majority
         if (daoApproved && subDaoApproved) {
             voteData.result = VoteResult.Approved;
@@ -684,11 +667,8 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         }
 
         voteData.isFinalized = true;
-        
-        emit VoteFinalized(
-            attestationUID, 
-            voteData.result
-        );
+
+        emit VoteFinalized(attestationUID, voteData.result);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -701,29 +681,23 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @dev Only callable after phase is approved and not already funded
     function releasePhaseFunds(bytes32 projectId, IProofOfChange.VoteType phase) external {
         Project storage project = projects[projectId];
-        
+
         // Validation checks
         if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
         if (project.status != ProjectStatus.Completed) revert IProofOfChange.ProjectNotComplete();
-        
+
         StateProof storage proof = project.stateProofs[phase];
         if (!_isApproved(proof.attestationUID)) revert IProofOfChange.PhaseNotApproved();
         if (phaseFundsReleased[projectId][phase]) revert IProofOfChange.FundsAlreadyReleased();
-        
+
         // Calculate release amount using the getPhaseWeight function
         uint256 releaseAmount = (project.requestedFunds * getPhaseWeight(phase)) / 100;
         phaseFundsReleased[projectId][phase] = true;
-        
-        (bool success, ) = project.proposer.call{value: releaseAmount}("");
+
+        (bool success,) = project.proposer.call{value: releaseAmount}("");
         if (!success) revert IProofOfChange.FundTransferFailed();
-        
-        emit PhaseFundsReleased(
-            projectId,
-            phase,
-            project.proposer,
-            releaseAmount,
-            block.timestamp
-        );
+
+        emit PhaseFundsReleased(projectId, phase, project.proposer, releaseAmount, block.timestamp);
     }
 
     /// @notice Gets financial details for a project
@@ -733,21 +707,25 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @return progressPhaseAmount Amount allocated to progress phase
     /// @return completionPhaseAmount Amount allocated to completion phase
     /// @return phasesFunded Array indicating which phases have been funded
-    function getProjectFinancials(bytes32 projectId) external view returns (
-        uint256 totalRequested,
-        uint256 initialPhaseAmount,
-        uint256 progressPhaseAmount,
-        uint256 completionPhaseAmount,
-        bool[] memory phasesFunded
-    ) {
+    function getProjectFinancials(bytes32 projectId)
+        external
+        view
+        returns (
+            uint256 totalRequested,
+            uint256 initialPhaseAmount,
+            uint256 progressPhaseAmount,
+            uint256 completionPhaseAmount,
+            bool[] memory phasesFunded
+        )
+    {
         Project storage project = projects[projectId];
         bool[] memory funded = new bool[](3);
-        
+
         // Get release status for each phase
         funded[0] = phaseFundsReleased[projectId][IProofOfChange.VoteType.Initial];
         funded[1] = phaseFundsReleased[projectId][IProofOfChange.VoteType.Progress];
         funded[2] = phaseFundsReleased[projectId][IProofOfChange.VoteType.Completion];
-        
+
         // Calculate phase amounts based on weights
         uint256 totalFunds = project.requestedFunds;
         return (
@@ -764,19 +742,17 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @param newProgressWeight Weight for progress phase (percentage)
     /// @param newCompletionWeight Weight for completion phase (percentage)
     /// @dev Total weights must equal 100
-    function proposePhaseWeights(uint256 newInitialWeight, uint256 newProgressWeight, uint256 newCompletionWeight) external {
+    function proposePhaseWeights(uint256 newInitialWeight, uint256 newProgressWeight, uint256 newCompletionWeight)
+        external
+    {
         // Validate total equals 100%
         if (newInitialWeight + newProgressWeight + newCompletionWeight != 100) {
             revert InvalidWeightTotal();
         }
 
-        bytes32 proposalId = keccak256(abi.encodePacked(
-            "phaseWeights",
-            newInitialWeight,
-            newProgressWeight,
-            newCompletionWeight,
-            block.timestamp
-        ));
+        bytes32 proposalId = keccak256(
+            abi.encodePacked("phaseWeights", newInitialWeight, newProgressWeight, newCompletionWeight, block.timestamp)
+        );
 
         WeightProposal storage proposal = weightProposals[proposalId];
         proposal.initialWeight = newInitialWeight;
@@ -786,13 +762,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         proposal.votesRequired = minimumPauseVotes; // Reuse existing threshold or set new one
         proposal.exists = true;
 
-        emit PhaseWeightsProposed(
-            proposalId,
-            newInitialWeight,
-            newProgressWeight,
-            newCompletionWeight,
-            msg.sender
-        );
+        emit PhaseWeightsProposed(proposalId, newInitialWeight, newProgressWeight, newCompletionWeight, msg.sender);
     }
 
     /// @notice Vote on a proposed phase weight change
@@ -808,21 +778,18 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
         if (approve) {
             proposal.votesReceived++;
-            
+
             // If threshold met, update weights
             if (proposal.votesReceived >= proposal.votesRequired) {
                 phaseWeights.initialWeight = proposal.initialWeight;
                 phaseWeights.progressWeight = proposal.progressWeight;
                 phaseWeights.completionWeight = proposal.completionWeight;
                 phaseWeights.lastUpdated = block.timestamp;
-                
+
                 proposal.executed = true;
 
                 emit PhaseWeightsUpdated(
-                    proposalId,
-                    proposal.initialWeight,
-                    proposal.progressWeight,
-                    proposal.completionWeight
+                    proposalId, proposal.initialWeight, proposal.progressWeight, proposal.completionWeight
                 );
             }
         }
@@ -842,11 +809,11 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
     function emergencyPause(FunctionGroup group) external {
         if (!isEmergencyAdmin(msg.sender)) revert UnauthorizedEmergencyAdmin();
-        
+
         PauseConfig storage config = pauseConfigs[group];
         config.isPaused = true;
         config.pauseEnds = block.timestamp + EMERGENCY_PAUSE_DURATION;
-        
+
         emit FunctionGroupPaused(group, config.pauseEnds);
     }
 
@@ -901,10 +868,10 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         if (newPeriodInDays < 1 || newPeriodInDays > 30) {
             revert InvalidVotingPeriod();
         }
-        
+
         uint256 oldPeriod = votingPeriod;
         votingPeriod = newPeriodInDays * 1 days;
-        
+
         emit VotingPeriodUpdated(oldPeriod, votingPeriod);
     }
 
@@ -914,14 +881,14 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @return proposalId The ID of the created pause proposal
     function proposePause(FunctionGroup group, uint256 duration) external onlyDAOMember returns (bytes32) {
         if (duration > STANDARD_PAUSE_DURATION) revert InvalidPauseDuration();
-        
+
         bytes32 proposalId = keccak256(abi.encodePacked(group, duration, block.timestamp));
         PauseVoting storage voting = pauseVotes[proposalId];
-        
+
         voting.votesRequired = minimumPauseVotes;
         voting.duration = duration;
         voting.proposedAt = block.timestamp;
-        
+
         emit PauseProposed(group, duration, proposalId);
         return proposalId;
     }
@@ -933,10 +900,10 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         PauseVoting storage voting = pauseVotes[proposalId];
         if (voting.proposedAt == 0) revert PauseProposalNotFound();
         if (voting.hasVoted[msg.sender]) revert AlreadyVotedForPause();
-        
+
         voting.hasVoted[msg.sender] = true;
         voting.votesReceived++;
-        
+
         emit PauseVoteCast(proposalId, msg.sender);
     }
 
@@ -944,27 +911,25 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
                             VIEW FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function getProjectDetails(bytes32 projectId) external view returns (
-        address proposer,
-        uint256 requestedFunds,
-        uint256 duration,
-        VoteType currentPhase,
-        bytes32[] memory attestationUIDs
-    ) {
+    function getProjectDetails(bytes32 projectId)
+        external
+        view
+        returns (
+            address proposer,
+            uint256 requestedFunds,
+            uint256 duration,
+            VoteType currentPhase,
+            bytes32[] memory attestationUIDs
+        )
+    {
         Project storage project = projects[projectId];
-        
+
         bytes32[] memory uids = new bytes32[](3);
         uids[0] = project.stateProofs[VoteType.Initial].attestationUID;
         uids[1] = project.stateProofs[VoteType.Progress].attestationUID;
         uids[2] = project.stateProofs[VoteType.Completion].attestationUID;
 
-        return (
-            project.proposer,
-            project.requestedFunds,
-            project.expectedDuration,
-            project.currentPhase,
-            uids
-        );
+        return (project.proposer, project.requestedFunds, project.expectedDuration, project.currentPhase, uids);
     }
 
     /// @notice Gets progress details for a specific project phase
@@ -974,25 +939,16 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @return endTime Phase target end time
     /// @return completed Whether phase is complete
     /// @return attestationUID The attestation UID for this phase
-    function getPhaseProgress(
-        bytes32 projectId, 
-        VoteType phase
-    ) external view returns (
-        uint256 startTime,
-        uint256 endTime,
-        bool completed,
-        bytes32 attestationUID
-    ) {
+    function getPhaseProgress(bytes32 projectId, VoteType phase)
+        external
+        view
+        returns (uint256 startTime, uint256 endTime, bool completed, bytes32 attestationUID)
+    {
         Project storage project = projects[projectId];
         PhaseProgress storage progress = project.phaseProgress[phase];
         StateProof storage proof = project.stateProofs[phase];
 
-        return (
-            progress.startTime,
-            progress.targetEndTime,
-            progress.isComplete,
-            proof.attestationUID
-        );
+        return (progress.startTime, progress.targetEndTime, progress.isComplete, proof.attestationUID);
     }
 
     function getUserProjects(address user) external view returns (bytes32[] memory) {
@@ -1009,29 +965,22 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         return block.timestamp > progress.targetEndTime;
     }
 
-    function getCurrentPhaseWeights(bytes32 projectId) external view override returns (
-        uint256 initialWeight,
-        uint256 progressWeight,
-        uint256 completionWeight
-    ) {
-        return (
-            phaseWeights.initialWeight,
-            phaseWeights.progressWeight,
-            phaseWeights.completionWeight
-        );
+    function getCurrentPhaseWeights(bytes32 projectId)
+        external
+        view
+        override
+        returns (uint256 initialWeight, uint256 progressWeight, uint256 completionWeight)
+    {
+        return (phaseWeights.initialWeight, phaseWeights.progressWeight, phaseWeights.completionWeight);
     }
 
-    function getStateProof(bytes32 projectId, VoteType phase) external view returns (
-        bytes32 attestationUID,
-        uint256 timestamp,
-        bool verified
-    ) {
+    function getStateProof(bytes32 projectId, VoteType phase)
+        external
+        view
+        returns (bytes32 attestationUID, uint256 timestamp, bool verified)
+    {
         StateProof storage proof = projects[projectId].stateProofs[phase];
-        return (
-            proof.attestationUID,
-            proof.timestamp,
-            proof.verified
-        );
+        return (proof.attestationUID, proof.timestamp, proof.verified);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1049,17 +998,14 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             // Decode Logbook data
             (
                 uint256 logbookTimestamp,
-                ,  // logbookLocation not used
-                   // logbookMemo not used
+                , // logbookLocation not used
+                    // logbookMemo not used
             ) = decodeLogbookData(attestation.data);
 
             // Store Logbook proof
             Project storage projectData = projects[attestation.refUID];
-            projectData.stateProofs[projectData.currentPhase] = StateProof({
-                attestationUID: attestation.uid,
-                timestamp: uint64(logbookTimestamp),
-                verified: false
-            });
+            projectData.stateProofs[projectData.currentPhase] =
+                StateProof({attestationUID: attestation.uid, timestamp: uint64(logbookTimestamp), verified: false});
 
             return true;
         }
@@ -1067,27 +1013,30 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         // Decode project attestation data
         (
             bytes32 projectId,
-            ,  // name (removed)
-            ,  // description (removed)
-            ,  // location (removed)
+            , // name (removed)
+            , // description (removed)
+            , // location (removed)
             uint256 regionId,
             IProofOfChange.VoteType phase
-        ) = abi.decode(attestation.data, (
-            bytes32,
-            string,  // keep decoder format
-            string,  // keep decoder format
-            string,  // keep decoder format
-            uint256,
-            IProofOfChange.VoteType
-        ));
+        ) = abi.decode(
+            attestation.data,
+            (
+                bytes32,
+                string, // keep decoder format
+                string, // keep decoder format
+                string, // keep decoder format
+                uint256,
+                IProofOfChange.VoteType
+            )
+        );
 
         Project storage project = projects[projectId];
 
         // Validation checks
-        if (project.proposer == address(0)) return false;  // Project must exist
-        if (attestation.attester != project.proposer) return false;  // Only proposer can attest
-        if (phase != project.currentPhase) return false;  // Phase must match current
-        
+        if (project.proposer == address(0)) return false; // Project must exist
+        if (attestation.attester != project.proposer) return false; // Only proposer can attest
+        if (phase != project.currentPhase) return false; // Phase must match current
+
         // Check if required milestones are complete
         if (!_areMilestonesComplete(projectId, phase)) {
             revert IProofOfChange.InvalidPhase();
@@ -1104,7 +1053,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @dev Only allows revocation under specific conditions
     function onRevoke(Attestation calldata attestation, uint256 value) internal virtual override returns (bool) {
         // Decode the attestation data
-        (bytes32 projectId,,,,, IProofOfChange.VoteType phase) = 
+        (bytes32 projectId,,,,, IProofOfChange.VoteType phase) =
             abi.decode(attestation.data, (bytes32, string, string, string, uint256, IProofOfChange.VoteType));
 
         Project storage project = projects[projectId];
@@ -1121,12 +1070,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         delete attestationVotes[attestation.uid];
         delete project.stateProofs[phase];
 
-        emit AttestationRevoked(
-            projectId,
-            phase,
-            msg.sender,
-            block.timestamp
-        );
+        emit AttestationRevoked(projectId, phase, msg.sender, block.timestamp);
         return true;
     }
 
@@ -1174,23 +1118,23 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @return timestamp The timestamp of the logbook entry
     /// @return location The location data
     /// @return memo The memo content
-    function decodeLogbookData(bytes memory data) internal pure returns (
-        uint256 timestamp,
-        string memory location,
-        string memory memo
-    ) {
+    function decodeLogbookData(bytes memory data)
+        internal
+        pure
+        returns (uint256 timestamp, string memory location, string memory memo)
+    {
         (
             timestamp,
-            ,   // eventType
+            , // eventType
             location,
             memo
         ) = abi.decode(
             data,
             (
-                uint256,    // timestamp
-                string,     // eventType
-                string,     // location
-                string     // memo
+                uint256, // timestamp
+                string, // eventType
+                string, // location
+                string // memo
             )
         );
     }
@@ -1200,18 +1144,14 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @param phase The phase to verify
     /// @param approve True to approve the state change, false to reject
     /// @dev Only DAO members can verify state changes
-    function verifyStateChange(
-        bytes32 projectId,
-        VoteType phase,
-        bool approve
-    ) external {
+    function verifyStateChange(bytes32 projectId, VoteType phase, bool approve) external {
         require(isDAOorSubDAO(msg.sender), "Not authorized");
-        
+
         Project storage project = projects[projectId];
         StateProof storage stateProof = project.stateProofs[phase];
 
         Attestation memory attestation = eas.getAttestation(stateProof.attestationUID);
-        
+
         if (phase != VoteType.Initial) {
             bytes32 initialAttestationUID = project.stateProofs[VoteType.Initial].attestationUID;
             // DAO members verify changes by comparing attestations
@@ -1219,12 +1159,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
         if (approve) {
             stateProof.verified = true;
-            emit StateVerified(
-                projectId,
-                phase,
-                msg.sender,
-                attestation.uid
-            );
+            emit StateVerified(projectId, phase, msg.sender, attestation.uid);
         }
     }
 
@@ -1233,22 +1168,22 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @return bool True if attestation is approved
     function _isApproved(bytes32 attestationUID) internal view returns (bool) {
         Vote storage voteData = attestationVotes[attestationUID];
-        
+
         // If voting period hasn't ended, return false
         if (block.timestamp <= voteData.votingEnds) {
             return false;
         }
-        
+
         // If vote is still pending after voting period ended, calculate result
         if (voteData.result == VoteResult.Pending) {
             // Calculate total votes
             uint32 totalVotesFor = voteData.daoVotesFor + voteData.subDaoVotesFor;
             uint32 totalVotesAgainst = voteData.daoVotesAgainst + voteData.subDaoVotesAgainst;
-            
+
             // Return true if majority voted in favor
             return totalVotesFor > totalVotesAgainst;
         }
-        
+
         // If vote has been finalized, return true only if Approved
         return voteData.result == VoteResult.Approved;
     }
@@ -1263,10 +1198,7 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @notice Internal function to submit progress for a project
     /// @param projectId The project ID
     /// @param progressAttestationUID The attestation UID
-    function _submitProgress(
-        bytes32 projectId,
-        bytes32 progressAttestationUID
-    ) internal {
+    function _submitProgress(bytes32 projectId, bytes32 progressAttestationUID) internal {
         Project storage project = projects[projectId];
         require(msg.sender == project.proposer, "Not proposer");
         require(project.currentPhase == VoteType.Progress, "Wrong phase");
@@ -1274,11 +1206,8 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
         Attestation memory attestation = eas.getAttestation(progressAttestationUID);
         require(attestation.schema == LOGBOOK_SCHEMA, "Invalid attestation");
 
-        project.stateProofs[VoteType.Progress] = StateProof({
-            attestationUID: progressAttestationUID,
-            timestamp: uint64(block.timestamp),
-            verified: false
-        });
+        project.stateProofs[VoteType.Progress] =
+            StateProof({attestationUID: progressAttestationUID, timestamp: uint64(block.timestamp), verified: false});
 
         emit ProgressSubmitted(projectId, progressAttestationUID);
     }
@@ -1296,5 +1225,4 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
             revert ProjectIsFrozen(projectId, frozenUntil);
         }
     }
-
 }

@@ -6,7 +6,6 @@ import {SchemaResolver} from "@eas/resolver/SchemaResolver.sol";
 import {IProofOfChange} from "./Interfaces/IProofOfChange.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
-
 /**
  * @title Proof of Change
  * @notice A decentralized protocol for managing project attestations and milestone-based funding
@@ -331,27 +330,50 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     function advanceToNextPhase(bytes32 projectId) external {
         _checkNotFrozen(projectId);
         Project storage project = projects[projectId];
-        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
-        if (msg.sender != project.proposer) revert IProofOfChange.UnauthorizedProposer();
+        if (project.proposer == address(0)) revert ProjectNotFound();
+        if (msg.sender != project.proposer) revert UnauthorizedProposer();
 
         // Verify current phase completion
         StateProof storage currentProof = project.stateProofs[project.currentPhase];
         Vote storage currentVote = attestationVotes[currentProof.attestationUID];
-        if (currentVote.result != IProofOfChange.VoteResult.Approved) {
-            revert IProofOfChange.PhaseNotApproved();
+        if (currentVote.result != VoteResult.Approved) {
+            revert PhaseNotApproved();
         }
 
         // Progress to next phase
-        if (project.currentPhase == IProofOfChange.VoteType.Initial) {
-            project.currentPhase = IProofOfChange.VoteType.Progress;
-        } else if (project.currentPhase == IProofOfChange.VoteType.Progress) {
-            project.currentPhase = IProofOfChange.VoteType.Completion;
+        if (project.currentPhase == VoteType.Initial) {
+            project.currentPhase = VoteType.Progress;
+        } else if (project.currentPhase == VoteType.Progress) {
+            project.currentPhase = VoteType.Completion;
         } else {
-            revert IProofOfChange.InvalidPhase();
+            revert InvalidPhase();
         }
 
         // Initialize new phase attestation
         createPhaseAttestation(projectId, project.currentPhase);
+    }
+
+    /// @notice Marks a project as complete after completion phase is approved
+    /// @param projectId The ID of the project to mark as complete
+    /// @dev Only callable by project proposer when completion phase voting is approved
+    function markProjectAsComplete(bytes32 projectId) external {
+        _checkNotFrozen(projectId);
+        Project storage project = projects[projectId];
+        if (project.proposer == address(0)) revert ProjectNotFound();
+        if (msg.sender != project.proposer) revert UnauthorizedProposer();
+        
+        // Check that we're in completion phase
+        if (project.currentPhase != VoteType.Completion) revert InvalidPhase();
+        
+        // Check that completion vote is approved
+        StateProof storage proof = project.stateProofs[VoteType.Completion];
+        Vote storage completionVote = attestationVotes[proof.attestationUID];
+        if (completionVote.result != VoteResult.Approved) revert PhaseNotApproved();
+        
+        // Mark project as complete
+        project.status = ProjectStatus.Completed;
+        
+        emit ProjectCompleted(projectId, block.timestamp);
     }
 
     /// @notice Updates the status of a project
@@ -359,18 +381,18 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
     /// @param newStatus The new status to set
     /// @dev Only callable by DAO members
     function updateProjectStatus(bytes32 projectId, ProjectStatus newStatus) external {
-        if (members[msg.sender] != IProofOfChange.MemberType.DAOMember) 
-            revert IProofOfChange.UnauthorizedDAO();
+        if (members[msg.sender] != MemberType.DAOMember) 
+            revert UnauthorizedDAO();
         
         Project storage project = projects[projectId];
-        if (project.proposer == address(0)) revert IProofOfChange.ProjectNotFound();
+        if (project.proposer == address(0)) revert ProjectNotFound();
         
         // Validate status transitions
         if (newStatus == ProjectStatus.Completed) {
-            StateProof storage proof = project.stateProofs[IProofOfChange.VoteType.Completion];
-            if (project.currentPhase != IProofOfChange.VoteType.Completion || 
+            StateProof storage proof = project.stateProofs[VoteType.Completion];
+            if (project.currentPhase != VoteType.Completion || 
                 !_isApproved(proof.attestationUID)) 
-                revert IProofOfChange.ProjectNotCompletable();
+                revert ProjectNotCompletable();
         }
 
         ProjectStatus oldStatus = project.status;
@@ -441,6 +463,31 @@ contract ProofOfChange is SchemaResolver, IProofOfChange, ReentrancyGuard {
 
         emit ProgressSubmitted(projectId, progressAttestationUID);
     }
+
+    /// @notice Submit completion update for a project's final phase
+    /// @param projectId The ID of the project
+    /// @param completionAttestationUID The attestation UID for the completion update
+    /// @dev Only callable by project proposer during completion phase
+    function submitCompletion(
+        bytes32 projectId,
+        bytes32 completionAttestationUID
+    ) external nonReentrant {
+        Project storage project = projects[projectId];
+        require(msg.sender == project.proposer, "Not proposer");
+        require(project.currentPhase == VoteType.Completion, "Wrong phase");
+
+        Attestation memory attestation = eas.getAttestation(completionAttestationUID);
+        require(attestation.schema == LOGBOOK_SCHEMA, "Invalid attestation");
+
+        project.stateProofs[VoteType.Completion] = StateProof({
+            attestationUID: completionAttestationUID,
+            timestamp: uint64(block.timestamp),
+            verified: false
+        });
+
+        emit CompletionSubmitted(projectId, completionAttestationUID);
+    }
+
 
     function _initializePhaseProgress(bytes32 projectId, VoteType phase, string[] memory milestones) internal {
         Project storage project = projects[projectId];

@@ -261,6 +261,11 @@ interface IProofOfChange {
         bytes32 attestationUID
     );
 
+    /// @notice Emitted when a completion update is submitted
+    /// @param projectId The ID of the project
+    /// @param attestationUID The attestation UID for the completion update
+    event CompletionSubmitted(bytes32 indexed projectId, bytes32 attestationUID);
+
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -358,6 +363,12 @@ interface IProofOfChange {
     function updateProjectStatus(bytes32 projectId, ProjectStatus newStatus) external;
     function updateMilestone(bytes32 projectId, string calldata milestone, bool completed) external;
     function submitProgress(bytes32 projectId, bytes32 logbookAttestationUID) external;
+    function submitCompletion(bytes32 projectId, bytes32 completionAttestationUID) external;
+
+    /// @notice Marks a project as complete after completion phase is approved
+    /// @param projectId The ID of the project to mark as complete
+    /// @dev Only callable when completion phase voting is approved
+    function markProjectAsComplete(bytes32 projectId) external;
 
     function releasePhaseFunds(bytes32 projectId, VoteType phase) external;
     function proposePhaseWeights(uint256 newInitialWeight, uint256 newProgressWeight, uint256 newCompletionWeight) external;

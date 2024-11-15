@@ -7,19 +7,19 @@ import {ProofOfChange} from "../src/ProofOfChange.sol";
 import {IProofOfChange} from "../src/Interfaces/IProofOfChange.sol";
 
 contract ReleaseFundsScript is Script {
-    function run() external {
-        address pocAddress = vm.envAddress("POC_ADDRESS");
-        bytes32 projectId = vm.envBytes32("POC_PROJECT_ID");
-        IProofOfChange poc = IProofOfChange(pocAddress);
+    // function run() external {
+    //     address pocAddress = vm.envAddress("POC_ADDRESS");
+    //     bytes32 projectId = vm.envBytes32("POC_PROJECT_ID");
+    //     IProofOfChange poc = IProofOfChange(pocAddress);
         
-        uint256 daoKey = vm.envUint("DAO_KEY_1");
-        vm.startBroadcast(daoKey);
+    //     uint256 daoKey = vm.envUint("DAO_KEY_1");
+    //     vm.startBroadcast(daoKey);
         
-        poc.releasePhaseFunds(projectId, IProofOfChange.VoteType.Initial);
-        poc.releasePhaseFunds(projectId, IProofOfChange.VoteType.Progress);
-        poc.releasePhaseFunds(projectId, IProofOfChange.VoteType.Completion);
+    //     poc.releasePhaseFunds(projectId, IProofOfChange.VoteType.Initial);
+    //     poc.releasePhaseFunds(projectId, IProofOfChange.VoteType.Progress);
+    //     poc.releasePhaseFunds(projectId, IProofOfChange.VoteType.Completion);
         
-        console.log("All funds released");
-        vm.stopBroadcast();
-    }
+    //     console.log("All funds released");
+    //     vm.stopBroadcast();
+    // }
 }

@@ -1,13 +1,36 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
-contract ProofOfChange {
-    // Configuration
+import "@eas/IEAS.sol";
+import "@eas/resolver/SchemaResolver.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+
+/**
+ * @title ProofOfChange
+ * @dev A decentralized contract for managing and verifying environmental conservation projects
+ * through satellite imagery and on-chain attestations.
+ *
+ * The contract implements a three-phase project lifecycle:
+ * 1. Initial Phase (25% funding)
+ * 2. Progress Phase (25% funding) 
+ * 3. Completion Phase (50% funding)
+ *
+ * Each phase requires:
+ * - State proof submission (attestation + satellite image)
+ * - Voting approval from both DAO and SubDAO members
+ * - Successful vote completion to release funds
+ *
+ * @notice This contract handles project creation, voting, fund management, and membership control
+
+ */
+contract ProofOfChange is ReentrancyGuard {
+
+    // ============ Structs ============
     struct VotingConfig {
         uint256 votingPeriod;      // How long voting lasts
     }
 
-    // Stores project details like proposer, location, requested funds, region, estimated duration, start time, and status (smart contract data, not logbook entry data)
     struct Project {
         // Core project info
         address proposer;
@@ -21,8 +44,7 @@ contract ProofOfChange {
         bool isActive;
         uint8 currentPhase;       // 0: Initial, 1: Progress, 2: Completion
     }
-
-    // Tracks voting data from both DAO and SubDAO
+  
     struct Vote {
         uint128 daoFor;
         uint128 daoAgainst;
@@ -33,8 +55,7 @@ contract ProofOfChange {
         bool finalized;
         bool approved;
     }
-
-    // Stores state proof data including attestation UID, image hash, timestamp, vote data, and completion status   
+ 
     struct StateProof {
         bytes32 attestationUID;
         bytes32 imageHash;
@@ -43,7 +64,7 @@ contract ProofOfChange {
         bool completed;
     }
 
-    // Add this struct definition near the top of the contract with other structs
+    
     struct ProjectDetails {
         address proposer;
         string location;
@@ -57,80 +78,42 @@ contract ProofOfChange {
         uint8 currentPhase;
     }
 
-    // Events
-    event VotingConfigUpdated(uint256 newVotingPeriod);
-    event ProjectCreated(
-        bytes32 indexed projectId,
-        address indexed proposer,
-        uint256 requestedFunds,
-        uint256 estimatedDuration
-    );
-    event StateProofSubmitted(
-        bytes32 indexed projectId,
-        uint8 indexed phase,
-        bytes32 attestationUID,
-        bytes32 imageHash
-    );
-    event VoteCast(
-        bytes32 indexed projectId,
-        uint8 indexed phase,
-        address indexed voter,
-        bool isDAO,
-        bool support
-    );
-    event VotingStarted(
-        bytes32 indexed projectId,
-        uint8 indexed phase,
-        uint256 startTime,
-        uint256 endTime
-    );
-    event VotingCompleted(
-        bytes32 indexed projectId,
-        uint8 indexed phase,
-        bool approved
-    );
-    event PhaseCompleted(
-        bytes32 indexed projectId,
-        uint8 indexed phase,
-        uint256 timestamp
-    );
-    event FundsReleased(
-        bytes32 indexed projectId,
-        uint8 indexed phase,
-        uint256 amount
-    );
-    event DAOMemberAdded(
-        address indexed member
-    );
-    event DAOMemberRemoved(
-        address indexed member
-    );
-    event SubDAOMemberAdded(
-        address indexed member,
-        uint256 indexed regionId
-    );
-    event SubDAOMemberRemoved(
-        address indexed member,
-        uint256 indexed regionId
-    );
+    // ============ Events ============
 
-    // Storage
+    event VotingConfigUpdated(uint256 newVotingPeriod);
+    event ProjectCreated(bytes32 indexed projectId, address indexed proposer, uint256 requestedFunds, uint256 estimatedDuration);
+    event StateProofSubmitted(bytes32 indexed projectId, uint8 indexed phase, bytes32 attestationUID, bytes32 imageHash);
+    event VoteCast(bytes32 indexed projectId, uint8 indexed phase, address indexed voter, bool isDAO, bool support);
+    event VotingStarted(bytes32 indexed projectId, uint8 indexed phase, uint256 startTime, uint256 endTime);
+    event VotingCompleted(bytes32 indexed projectId, uint8 indexed phase, bool approved);
+    event PhaseCompleted(bytes32 indexed projectId, uint8 indexed phase, uint256 timestamp);
+    event FundsReleased(bytes32 indexed projectId, uint8 indexed phase, uint256 amount);
+    event DAOMemberAdded(address indexed member);
+    event DAOMemberRemoved(address indexed member);
+    event SubDAOMemberAdded(address indexed member, uint256 indexed regionId);
+    event SubDAOMemberRemoved(address indexed member, uint256 indexed regionId);
+
+    // ============ State Variables ============
+
     mapping(bytes32 => Project) public projects;
     mapping(bytes32 => StateProof) private stateProofs;
-    // Membership verification storage
     mapping(address => bool) private daoMembers;
     mapping(uint256 => mapping(address => bool)) private subDaoMembers; // regionId => member => isMember
 
     VotingConfig public votingConfig;
     address public admin;
 
-    // Constructor
+    /**
+     * @notice Contract constructor
+     * @param initialVotingPeriod Initial duration of voting periods
+     */
     constructor(uint256 initialVotingPeriod) {
         votingConfig.votingPeriod = initialVotingPeriod;
         admin = msg.sender;
     }
 
-    // Modifiers
+    // ============ Modifiers ============
+
     modifier onlyAdmin() {
         require(msg.sender == admin, "Only admin");
         _;
@@ -148,32 +131,11 @@ contract ProofOfChange {
 
     modifier onlyDAOOrSubDAOMember(uint256 regionId) {
         bool isDAO = daoMembers[msg.sender];
-        require(
-            isDAO || subDaoMembers[regionId][msg.sender],
-            "Not authorized to vote"
-        );
+        require(isDAO || subDaoMembers[regionId][msg.sender], "Not authorized to vote");
         _;
     }
 
-    /**
-     * @notice Update voting configuration
-     * @param newVotingPeriod New voting period duration
-     */
-    function updateVotingConfig(uint256 newVotingPeriod) external onlyAdmin {
-        require(newVotingPeriod > 0, "Invalid voting period");
-        votingConfig.votingPeriod = newVotingPeriod;
-        emit VotingConfigUpdated(newVotingPeriod);
-    }
-
-    /**
-     * @notice Generate a state proof ID from project ID and phase
-     * @param projectId The project ID
-     * @param phase Phase number (0: Initial, 1: Progress, 2: Completion)
-     */
-    function generateStateProofId(bytes32 projectId, uint8 phase) public pure returns (bytes32) {
-        require(phase <= 2, "Invalid phase");
-        return keccak256(abi.encodePacked(projectId, phase));
-    }
+    // ============ Project Management Functions ============
 
     /**
      * @notice Create initial project and state proof
@@ -184,7 +146,6 @@ contract ProofOfChange {
      * @param regionId Geographic region ID
      * @param estimatedDuration Estimated project duration in seconds
      */
-
     function createProject(
         bytes32 attestationUID,
         bytes32 imageHash,
@@ -192,78 +153,47 @@ contract ProofOfChange {
         uint256 requestedFunds,
         uint256 regionId,
         uint256 estimatedDuration
-    ) external payable returns (bytes32) {
+    ) external payable nonReentrant returns (bytes32) {
         require(msg.value == requestedFunds, "Incorrect funds sent");
         require(attestationUID != bytes32(0), "Invalid attestation");
         require(imageHash != bytes32(0), "Invalid image hash");
-        require(estimatedDuration > 0, "Invalid duration");
-        require(estimatedDuration <= 365 days, "Duration too long");
+        require(estimatedDuration > 0 && estimatedDuration <= 365 days, "Invalid duration");
         
-        bytes32 projectId = keccak256(abi.encodePacked(
-            msg.sender,
-            attestationUID,
-            block.timestamp
-        ));
-
-        Project storage project = projects[projectId];
-        project.proposer = msg.sender;
-        project.location = location;
-        project.requestedFunds = requestedFunds;
-        project.regionId = regionId;
-        project.estimatedDuration = estimatedDuration;
-        project.isActive = true;
-        project.currentPhase = 0;
-
-        bytes32 stateProofId = generateStateProofId(projectId, 0);
-        StateProof storage stateProof = stateProofs[stateProofId];
-        stateProof.attestationUID = attestationUID;
-        stateProof.imageHash = imageHash;
-        stateProof.timestamp = block.timestamp;
-
+        bytes32 projectId = keccak256(abi.encodePacked(msg.sender, attestationUID, block.timestamp));
+        _createProjectInternal(projectId, msg.sender, location, requestedFunds, regionId, estimatedDuration);
+        _createInitialStateProof(projectId, attestationUID, imageHash);
+        
         emit ProjectCreated(projectId, msg.sender, requestedFunds, estimatedDuration);
-
         return projectId;
     }
 
+    // ============ State Proof Functions ============
+
     /**
      * @notice Submit a new state proof for progress/completion
-     * @param projectId The project ID
-     * @param attestationUID New Logbook attestation
-     * @param imageHash New satellite image hash
      */
     function submitStateProof(
         bytes32 projectId,
         bytes32 attestationUID,
         bytes32 imageHash
-    ) external {
+    ) external nonReentrant {
         Project storage project = projects[projectId];
         require(project.isActive, "Project not active");
         require(msg.sender == project.proposer, "Not proposer");
         
         uint8 currentPhase = project.currentPhase;
         require(currentPhase < 2, "Project completed");
-        // ensures that the current phase is completed before allowing a new state proof submission 
-        bytes32 currentStateProofId = generateStateProofId(projectId, currentPhase);
-        StateProof storage currentProof = stateProofs[currentStateProofId];
-        require(currentProof.completed, "Current phase not completed");
-        // generates a unique ID for the new state proof by combining the project ID and the next phase number
-        // checks if a state proof already exists for the new phase, reverts if state proof already exists
-        bytes32 newStateProofId = generateStateProofId(projectId, currentPhase + 1);
-        StateProof storage newProof = stateProofs[newStateProofId];
-        require(newProof.timestamp == 0, "State proof already exists");
-
-        newProof.attestationUID = attestationUID;
-        newProof.imageHash = imageHash;
-        newProof.timestamp = block.timestamp;
-
+        
+        _validateAndUpdateStateProof(projectId, currentPhase, attestationUID, imageHash);
+        
         emit StateProofSubmitted(projectId, currentPhase + 1, attestationUID, imageHash);
-        // updates the project's current phase to the next phase
         project.currentPhase = currentPhase + 1;
     }
 
+    // ============ Voting Functions ============
+
     /**
      * @notice Start voting period for current phase
-     * @param projectId The project ID
      */
     function startVoting(bytes32 projectId) external {
         Project storage project = projects[projectId];
@@ -293,8 +223,6 @@ contract ProofOfChange {
 
     /**
      * @notice Cast vote for current phase
-     * @param projectId The project ID
-     * @param support True for approval, false for rejection
      */
     function castVote(bytes32 projectId, bool support) external onlyDAOOrSubDAOMember(projects[projectId].regionId) {
         bool isDAO = daoMembers[msg.sender];
@@ -328,9 +256,8 @@ contract ProofOfChange {
 
     /**
      * @notice Finalize voting and process results
-     * @param projectId The project ID
      */
-    function finalizeVoting(bytes32 projectId) external {
+    function finalizeVoting(bytes32 projectId) external nonReentrant {
         Project storage project = projects[projectId];
         require(project.isActive, "Project not active");
 
@@ -362,9 +289,10 @@ contract ProofOfChange {
         }
     }
 
+    // ============ Fund Management Functions ============
+
     /**
      * @notice Complete phase and release funds
-     * @param projectId The project ID
      */
     function completePhase(bytes32 projectId) internal {
         Project storage project = projects[projectId];
@@ -390,8 +318,6 @@ contract ProofOfChange {
 
     /**
      * @notice Calculate funds to release for phase
-     * @param totalFunds Total project funds
-     * @param phase Current phase
      */
     function calculatePhaseAmount(uint256 totalFunds, uint8 phase) internal pure returns (uint256) {
         if (phase == 0) return totalFunds * 25 / 100; // Initial: 25%
@@ -400,9 +326,10 @@ contract ProofOfChange {
         return 0;
     }
 
+    // ============ View Functions ============
+
     /**
      * @notice Get project details including duration info
-     * @param projectId The project ID
      */
     function getProjectDetails(bytes32 projectId) external view returns (ProjectDetails memory) {
         Project storage project = projects[projectId];
@@ -433,8 +360,6 @@ contract ProofOfChange {
 
     /**
      * @notice Get state proof details
-     * @param projectId The project ID
-     * @param phase Phase number to query
      */
     function getStateProofDetails(bytes32 projectId, uint8 phase) external view returns (
         bytes32 attestationUID,
@@ -452,76 +377,10 @@ contract ProofOfChange {
         );
     }
 
-    /**
-    * @notice Get state proof details
-    * @param stateProofId The state proof ID to query
-    */
-    function getStateProof(bytes32 stateProofId) external view returns (
-        bytes32 attestationUID,
-        bytes32 imageHash,
-        uint256 timestamp,
-        bool completed
-    ) {
-        StateProof storage proof = stateProofs[stateProofId];
-        return (
-            proof.attestationUID,
-            proof.imageHash,
-            proof.timestamp,
-            proof.completed
-        );
-    }
-
-    /**
-     * @notice Get voting status for a phase
-     * @param projectId The project ID
-     * @param phase Phase number to query
-     */
-    function getVotingStatus(bytes32 projectId, uint8 phase) external view returns (
-        uint256 startTime,
-        uint256 endTime,
-        uint256 daoFor,
-        uint256 daoAgainst,
-        uint256 subDaoFor,
-        uint256 subDaoAgainst,
-        bool finalized,
-        bool approved
-    ) {
-        bytes32 stateProofId = generateStateProofId(projectId, phase);
-        StateProof storage stateProof = stateProofs[stateProofId];
-        Vote storage vote = stateProof.vote;
-
-        return (
-            vote.startTime,
-            vote.startTime + votingConfig.votingPeriod,
-            vote.daoFor,
-            vote.daoAgainst,
-            vote.subDaoFor,
-            vote.subDaoAgainst,
-            vote.finalized,
-            vote.approved
-        );
-    }
-
-   /**
-     * @notice Check if address is DAO member
-     * @param member Address to check
-     */
-    function isDAOMember(address member) public view returns (bool) {
-        return daoMembers[member];
-    }
-
-    /**
-     * @notice Check if address is SubDAO member for region
-     * @param member Address to check
-     * @param regionId Region to check membership for
-     */
-    function isSubDAOMember(address member, uint256 regionId) public view returns (bool) {
-        return subDaoMembers[regionId][member];
-    }
+    // ============ Membership Management Functions ============
 
     /**
      * @notice Add a DAO member
-     * @param member Address to add as DAO member
      */
     function addDAOMember(address member) external onlyAdmin {
         require(member != address(0), "Invalid address");
@@ -532,8 +391,6 @@ contract ProofOfChange {
 
     /**
      * @notice Add a SubDAO member
-     * @param member Address to add as SubDAO member
-     * @param regionId Region ID for membership
      */
     function addSubDAOMember(address member, uint256 regionId) external onlyAdmin {
         require(member != address(0), "Invalid address");
@@ -542,60 +399,79 @@ contract ProofOfChange {
         emit SubDAOMemberAdded(member, regionId);
     }
 
-    /**
-     * @notice Remove a DAO member
-     * @param member Address to remove from DAO
-     */
-    function removeDAOMember(address member) external onlyAdmin {
-        require(daoMembers[member], "Not DAO member");
-        daoMembers[member] = false;
-        emit DAOMemberRemoved(member);
-    }
+    // ============ Internal Helper Functions ============
 
     /**
-     * @notice Remove a SubDAO member
-     * @param member Address to remove from SubDAO
-     * @param regionId Region ID to remove membership from
+     * @dev Creates a new project with the given parameters
      */
-    function removeSubDAOMember(address member, uint256 regionId) external onlyAdmin {
-        require(subDaoMembers[regionId][member], "Not SubDAO member");
-        subDaoMembers[regionId][member] = false;
-        emit SubDAOMemberRemoved(member, regionId);
-    }
-
-    // TODO: batch the membership so that it adds, removes, and updates in a single gas efficient function 
-
-    /**
-     * @notice Check if member has voted on current phase
-     * @param projectId The project ID
-     * @param member Address to check
-     */
-    function hasVoted(bytes32 projectId, address member) external view returns (bool) {
+    function _createProjectInternal(
+        bytes32 projectId,
+        address proposer,
+        string memory location,
+        uint256 requestedFunds,
+        uint256 regionId,
+        uint256 estimatedDuration
+    ) private {
         Project storage project = projects[projectId];
-        bytes32 stateProofId = generateStateProofId(projectId, project.currentPhase);
-        return stateProofs[stateProofId].vote.hasVoted[member];
+        project.proposer = proposer;
+        project.location = location;
+        project.requestedFunds = requestedFunds;
+        project.regionId = regionId;
+        project.estimatedDuration = estimatedDuration;
+        project.isActive = true;
+        project.currentPhase = 0;
     }
 
-    // TODO: create a similar one to this but for proposers (in the case that the project proposer needs to be updated)
     /**
-     * @notice Update admin address
-     * @param newAdmin New admin address
+     * @dev Creates the initial state proof for a project
      */
-    function updateAdmin(address newAdmin) external onlyAdmin {
-        require(newAdmin != address(0), "Invalid address");
-        admin = newAdmin;
-    }
-        /**
-     * @notice Get contract balance
-     */
-    function getContractBalance() external view returns (uint256) {
-        return address(this).balance;
+    function _createInitialStateProof(
+        bytes32 projectId,
+        bytes32 attestationUID,
+        bytes32 imageHash
+    ) private {
+        bytes32 stateProofId = generateStateProofId(projectId, 0);
+        StateProof storage stateProof = stateProofs[stateProofId];
+        stateProof.attestationUID = attestationUID;
+        stateProof.imageHash = imageHash;
+        stateProof.timestamp = block.timestamp;
     }
 
-    // Function to receive Ether
+    /**
+     * @dev Validates and updates state proof for a given phase
+     */
+    function _validateAndUpdateStateProof(
+        bytes32 projectId,
+        uint8 phase,
+        bytes32 attestationUID,
+        bytes32 imageHash
+    ) private {
+        require(attestationUID != bytes32(0), "Invalid attestation");
+        require(imageHash != bytes32(0), "Invalid image hash");
+
+        bytes32 stateProofId = generateStateProofId(projectId, phase + 1);
+        StateProof storage stateProof = stateProofs[stateProofId];
+        
+        // Ensure no existing state proof
+        require(stateProof.attestationUID == bytes32(0), "State proof exists");
+        
+        stateProof.attestationUID = attestationUID;
+        stateProof.imageHash = imageHash;
+        stateProof.timestamp = block.timestamp;
+    }
+
+    // ============ Utility Functions ============
+
+    /**
+     * @notice Generate a state proof ID from project ID and phase
+     */
+    function generateStateProofId(bytes32 projectId, uint8 phase) public pure returns (bytes32) {
+        require(phase <= 2, "Invalid phase");
+        return keccak256(abi.encodePacked(projectId, phase));
+    }
+
+    // ============ Fallback Functions ============
+
     receive() external payable {}
-
-    // Fallback function
     fallback() external payable {}
-
 }

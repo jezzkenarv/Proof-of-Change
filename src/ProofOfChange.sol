@@ -5,6 +5,7 @@ import "@eas/IEAS.sol";
 import "@eas/resolver/SchemaResolver.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
+import "./interfaces/IProofOfChange.sol";
 
 /**
  * @title ProofOfChange
@@ -22,25 +23,19 @@ import "@openzeppelin/contracts/utils/Strings.sol";
  * - Successful vote completion to release funds
  *
  * @notice This contract handles project creation, voting, fund management, and membership control
-
  */
-contract ProofOfChange is ReentrancyGuard {
+contract ProofOfChange is IProofOfChange, ReentrancyGuard {
 
-    // ============ Structs ============
-    struct VotingConfig {
-        uint256 votingPeriod;      // How long voting lasts
-    }
-
+    // ============ Internal Structs ============
+    // These structs are not exposed in the interface because they're only used internally
+    
     struct Project {
-        // Core project info
         address proposer;
         string location;           
         uint256 requestedFunds;
         uint256 regionId;
         uint256 estimatedDuration; // Duration in seconds
         uint256 startTime;         // When project begins (after initial phase approval)
-        
-        // Status
         bool isActive;
         uint8 currentPhase;       // 0: Initial, 1: Progress, 2: Completion
     }
@@ -64,37 +59,7 @@ contract ProofOfChange is ReentrancyGuard {
         bool completed;
     }
 
-    
-    struct ProjectDetails {
-        address proposer;
-        string location;
-        uint256 requestedFunds;
-        uint256 regionId;
-        uint256 estimatedDuration;
-        uint256 startTime;
-        uint256 elapsedTime;
-        uint256 remainingTime;
-        bool isActive;
-        uint8 currentPhase;
-    }
-
-    // ============ Events ============
-
-    event VotingConfigUpdated(uint256 newVotingPeriod);
-    event ProjectCreated(bytes32 indexed projectId, address indexed proposer, uint256 requestedFunds, uint256 estimatedDuration);
-    event StateProofSubmitted(bytes32 indexed projectId, uint8 indexed phase, bytes32 attestationUID, bytes32 imageHash);
-    event VoteCast(bytes32 indexed projectId, uint8 indexed phase, address indexed voter, bool isDAO, bool support);
-    event VotingStarted(bytes32 indexed projectId, uint8 indexed phase, uint256 startTime, uint256 endTime);
-    event VotingCompleted(bytes32 indexed projectId, uint8 indexed phase, bool approved);
-    event PhaseCompleted(bytes32 indexed projectId, uint8 indexed phase, uint256 timestamp);
-    event FundsReleased(bytes32 indexed projectId, uint8 indexed phase, uint256 amount);
-    event DAOMemberAdded(address indexed member);
-    event DAOMemberRemoved(address indexed member);
-    event SubDAOMemberAdded(address indexed member, uint256 indexed regionId);
-    event SubDAOMemberRemoved(address indexed member, uint256 indexed regionId);
-
     // ============ State Variables ============
-
     mapping(bytes32 => Project) public projects;
     mapping(bytes32 => StateProof) private stateProofs;
     mapping(address => bool) private daoMembers;
@@ -115,23 +80,23 @@ contract ProofOfChange is ReentrancyGuard {
     // ============ Modifiers ============
 
     modifier onlyAdmin() {
-        require(msg.sender == admin, "Only admin");
+        if (msg.sender != admin) revert OnlyAdmin();
         _;
     }
 
     modifier onlyDAOMember() {
-        require(daoMembers[msg.sender], "Not DAO member");
+        if (!daoMembers[msg.sender]) revert OnlyDAOMember();
         _;
     }
 
     modifier onlySubDAOMember(uint256 regionId) {
-        require(subDaoMembers[regionId][msg.sender], "Not SubDAO member");
+        if (!subDaoMembers[regionId][msg.sender]) revert OnlySubDAOMember();
         _;
     }
 
     modifier onlyDAOOrSubDAOMember(uint256 regionId) {
         bool isDAO = daoMembers[msg.sender];
-        require(isDAO || subDaoMembers[regionId][msg.sender], "Not authorized to vote");
+        if (!isDAO && !subDaoMembers[regionId][msg.sender]) revert NotAuthorizedToVote();
         _;
     }
 
@@ -154,10 +119,10 @@ contract ProofOfChange is ReentrancyGuard {
         uint256 regionId,
         uint256 estimatedDuration
     ) external payable nonReentrant returns (bytes32) {
-        require(msg.value == requestedFunds, "Incorrect funds sent");
-        require(attestationUID != bytes32(0), "Invalid attestation");
-        require(imageHash != bytes32(0), "Invalid image hash");
-        require(estimatedDuration > 0 && estimatedDuration <= 365 days, "Invalid duration");
+        if (msg.value != requestedFunds) revert IncorrectFundsSent();
+        if (attestationUID == bytes32(0)) revert InvalidAttestation();
+        if (imageHash == bytes32(0)) revert InvalidImageHash();
+        if (estimatedDuration == 0 || estimatedDuration > 365 days) revert InvalidDuration();
         
         bytes32 projectId = keccak256(abi.encodePacked(msg.sender, attestationUID, block.timestamp));
         _createProjectInternal(projectId, msg.sender, location, requestedFunds, regionId, estimatedDuration);
@@ -178,11 +143,11 @@ contract ProofOfChange is ReentrancyGuard {
         bytes32 imageHash
     ) external nonReentrant {
         Project storage project = projects[projectId];
-        require(project.isActive, "Project not active");
-        require(msg.sender == project.proposer, "Not proposer");
+        if (!project.isActive) revert ProjectNotActive();
+        if (msg.sender != project.proposer) revert NotProposer();
         
         uint8 currentPhase = project.currentPhase;
-        require(currentPhase < 2, "Project completed");
+        if (currentPhase >= 2) revert ProjectCompleted();
         
         _validateAndUpdateStateProof(projectId, currentPhase, attestationUID, imageHash);
         
@@ -197,19 +162,16 @@ contract ProofOfChange is ReentrancyGuard {
      */
     function startVoting(bytes32 projectId) external {
         Project storage project = projects[projectId];
-        require(project.isActive, "Project not active");
-        require(msg.sender == project.proposer, "Not proposer");
+        if (!project.isActive) revert ProjectNotActive();
+        if (msg.sender != project.proposer) revert NotProposer();
 
         bytes32 stateProofId = generateStateProofId(projectId, project.currentPhase);
         StateProof storage stateProof = stateProofs[stateProofId];
         
-        require(stateProof.attestationUID != bytes32(0), "No attestation");
-        require(stateProof.vote.startTime == 0, "Voting already started");
-        // Project could technically still be marked as active even if it's in phase 2 (completion) or beyond 
-        require(project.currentPhase <= 2, "Project completed");
-        // sets the start time of the voting period to the current block timestamp
-        // used to calculate when voting ends (startTime + votingConfig.votingPeriod)
-        // used in the castVote function to verify votes are cast within the valid voting window 
+        if (stateProof.attestationUID == bytes32(0)) revert NoAttestation();
+        if (stateProof.vote.startTime != 0) revert VotingAlreadyStarted();
+        if (project.currentPhase > 2) revert ProjectCompleted();
+
         uint256 startTime = block.timestamp;
         stateProof.vote.startTime = startTime;
 
@@ -227,21 +189,16 @@ contract ProofOfChange is ReentrancyGuard {
     function castVote(bytes32 projectId, bool support) external onlyDAOOrSubDAOMember(projects[projectId].regionId) {
         bool isDAO = daoMembers[msg.sender];
         Project storage project = projects[projectId];
-        require(project.isActive, "Project not active");
+        if (!project.isActive) revert ProjectNotActive();
 
         bytes32 stateProofId = generateStateProofId(projectId, project.currentPhase);
         StateProof storage stateProof = stateProofs[stateProofId];
         Vote storage vote = stateProof.vote;
 
-        require(vote.startTime != 0, "Voting not started");
-        require(!vote.finalized, "Voting ended");
-        require(!vote.hasVoted[msg.sender], "Already voted");
-        // time-based check that verifies if the voting period is still active 
-        // for situations where the voting period has ended but the vote hasn't been finalized yet 
-        require(
-            block.timestamp <= vote.startTime + votingConfig.votingPeriod,
-            "Voting period ended"
-        );
+        if (vote.startTime == 0) revert VotingNotStarted();
+        if (vote.finalized) revert VotingEnded();
+        if (vote.hasVoted[msg.sender]) revert AlreadyVoted();
+        if (block.timestamp > vote.startTime + votingConfig.votingPeriod) revert VotingPeriodEnded();
 
         if (isDAO) {
             if (support) vote.daoFor++; 
@@ -251,6 +208,7 @@ contract ProofOfChange is ReentrancyGuard {
             else vote.subDaoAgainst++;
         }
 
+        vote.hasVoted[msg.sender] = true;
         emit VoteCast(projectId, project.currentPhase, msg.sender, isDAO, support);
     }
 
@@ -259,19 +217,16 @@ contract ProofOfChange is ReentrancyGuard {
      */
     function finalizeVoting(bytes32 projectId) external nonReentrant {
         Project storage project = projects[projectId];
-        require(project.isActive, "Project not active");
+        if (!project.isActive) revert ProjectNotActive();
 
         bytes32 stateProofId = generateStateProofId(projectId, project.currentPhase);
         StateProof storage stateProof = stateProofs[stateProofId];
         Vote storage vote = stateProof.vote;
 
-        require(vote.startTime != 0, "Voting not started");
-        require(!vote.finalized, "Already finalized");
-        require(
-            block.timestamp > vote.startTime + votingConfig.votingPeriod,
-            "Voting period not ended"
-        );
-        // approval based on majority votes 
+        if (vote.startTime == 0) revert VotingNotStarted();
+        if (vote.finalized) revert AlreadyFinalized();
+        if (block.timestamp <= vote.startTime + votingConfig.votingPeriod) revert VotingPeriodNotEnded();
+
         bool daoApproved = vote.daoFor > vote.daoAgainst;
         bool subDaoApproved = vote.subDaoFor > vote.subDaoAgainst;
 
@@ -282,9 +237,8 @@ contract ProofOfChange is ReentrancyGuard {
 
         if (vote.approved) {
             completePhase(projectId);
-            // Add special handling for completion phase to prevent any further state proofs or voting from being initiated on completed projects 
             if (project.currentPhase == 2) {
-                project.isActive = false; // Prevent any further actions on completed project
+                project.isActive = false;
             }
         }
     }
@@ -377,14 +331,43 @@ contract ProofOfChange is ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice Check if an address is a DAO member
+     */
+    function isDAOMember(address member) external view returns (bool) {
+        return daoMembers[member];
+    }
+
+    /**
+     * @notice Check if an address is a SubDAO member for a specific region
+     */
+    function isSubDAOMember(address member, uint256 regionId) external view returns (bool) {
+        return subDaoMembers[regionId][member];
+    }
+
+    /**
+     * @notice Check if a member has voted on a project's current phase
+     */
+    function hasVoted(bytes32 projectId, address member) external view returns (bool) {
+        bytes32 stateProofId = generateStateProofId(projectId, projects[projectId].currentPhase);
+        return stateProofs[stateProofId].vote.hasVoted[member];
+    }
+
+    /**
+     * @notice Get the current contract balance
+     */
+    function getContractBalance() external view returns (uint256) {
+        return address(this).balance;
+    }
+
     // ============ Membership Management Functions ============
 
     /**
      * @notice Add a DAO member
      */
     function addDAOMember(address member) external onlyAdmin {
-        require(member != address(0), "Invalid address");
-        require(!daoMembers[member], "Already DAO member");
+        if (member == address(0)) revert InvalidAddress();
+        if (daoMembers[member]) revert AlreadyDAOMember();
         daoMembers[member] = true;
         emit DAOMemberAdded(member);
     }
@@ -393,10 +376,22 @@ contract ProofOfChange is ReentrancyGuard {
      * @notice Add a SubDAO member
      */
     function addSubDAOMember(address member, uint256 regionId) external onlyAdmin {
-        require(member != address(0), "Invalid address");
-        require(!subDaoMembers[regionId][member], "Already SubDAO member");
+        if (member == address(0)) revert InvalidAddress();
+        if (subDaoMembers[regionId][member]) revert AlreadySubDAOMember();
         subDaoMembers[regionId][member] = true;
         emit SubDAOMemberAdded(member, regionId);
+    }
+
+    function removeDAOMember(address member) external onlyAdmin {
+        if (!daoMembers[member]) revert NotDAOMember();
+        daoMembers[member] = false;
+        emit DAOMemberRemoved(member);
+    }
+
+    function removeSubDAOMember(address member, uint256 regionId) external onlyAdmin {
+        if (!subDaoMembers[regionId][member]) revert NotSubDAOMember();
+        subDaoMembers[regionId][member] = false;
+        emit SubDAOMemberRemoved(member, regionId);
     }
 
     // ============ Internal Helper Functions ============
@@ -466,7 +461,7 @@ contract ProofOfChange is ReentrancyGuard {
      * @notice Generate a state proof ID from project ID and phase
      */
     function generateStateProofId(bytes32 projectId, uint8 phase) public pure returns (bytes32) {
-        require(phase <= 2, "Invalid phase");
+        if (phase > 2) revert InvalidPhase();
         return keccak256(abi.encodePacked(projectId, phase));
     }
 
@@ -474,4 +469,23 @@ contract ProofOfChange is ReentrancyGuard {
 
     receive() external payable {}
     fallback() external payable {}
+
+    // ============ Admin Functions ============
+
+    /**
+     * @notice Update the voting period configuration
+     */
+    function updateVotingConfig(uint256 newVotingPeriod) external onlyAdmin {
+        votingConfig.votingPeriod = newVotingPeriod;
+        emit VotingConfigUpdated(newVotingPeriod);
+    }
+
+    /**
+     * @notice Update the admin address
+     */
+    function updateAdmin(address newAdmin) external onlyAdmin {
+        if (newAdmin == address(0)) revert InvalidAddress();
+        admin = newAdmin;
+        emit AdminUpdated(newAdmin);
+    }
 }

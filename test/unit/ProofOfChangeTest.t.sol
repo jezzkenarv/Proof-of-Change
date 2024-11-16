@@ -140,6 +140,14 @@ contract ProofOfChangeTest is Test {
         // Finalize voting
         poc.finalizeVoting(projectId);
         
+        // Submit state proof for the initial phase
+        vm.prank(USER);
+        poc.submitStateProof(
+            projectId,
+            bytes32(uint256(2)), // New attestation
+            MOCK_IMAGE_HASH
+        );
+        
         // Verify project details after successful vote
         ProofOfChange.ProjectDetails memory details = poc.getProjectDetails(projectId);
         assertTrue(details.startTime > 0); // Should be set after initial phase approval
@@ -200,7 +208,7 @@ contract ProofOfChangeTest is Test {
         _completePhaseVoting(projectId);
         
         vm.prank(USER);
-        vm.expectRevert(IProofOfChange.ProjectCompleted.selector);
+        vm.expectRevert(IProofOfChange.ProjectNotActive.selector);
         poc.submitStateProof(
             projectId,
             bytes32(uint256(4)),
@@ -263,16 +271,32 @@ contract ProofOfChangeTest is Test {
     }
 
     function _completePhaseVoting(bytes32 projectId) internal {
+        // Start voting
         vm.prank(USER);
         poc.startVoting(projectId);
         
+        // Cast votes
         vm.prank(ADMIN);
         poc.castVote(projectId, true);
         
         vm.prank(SUBDAO_MEMBER);
         poc.castVote(projectId, true);
         
+        // Warp time to after voting period
         vm.warp(block.timestamp + VOTING_PERIOD + 1);
+        
+        // Finalize voting
         poc.finalizeVoting(projectId);
+
+        // Submit state proof for next phase (except for the final phase)
+        ProofOfChange.ProjectDetails memory details = poc.getProjectDetails(projectId);
+        if (details.isActive) {
+            vm.prank(USER);
+            poc.submitStateProof(
+                projectId,
+                bytes32(uint256(details.currentPhase + 2)), // Increment attestation UID
+                MOCK_IMAGE_HASH
+            );
+        }
     }
 }

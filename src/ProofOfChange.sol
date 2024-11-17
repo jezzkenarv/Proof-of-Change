@@ -147,12 +147,12 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
         if (msg.sender != project.proposer) revert NotProposer();
         
         uint8 currentPhase = project.currentPhase;
-        if (currentPhase >= 2) revert ProjectCompleted();
+        // currentPhase > 2 allows the submission for state proofs for phase 2 while preventing submissions after the project is completed 
+        if (currentPhase > 2) revert ProjectCompleted();
         
         _validateAndUpdateStateProof(projectId, currentPhase, attestationUID, imageHash);
         
-        emit StateProofSubmitted(projectId, currentPhase + 1, attestationUID, imageHash);
-        project.currentPhase = currentPhase + 1;
+        emit StateProofSubmitted(projectId, currentPhase, attestationUID, imageHash);
     }
 
     // ============ Voting Functions ============
@@ -237,9 +237,14 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
 
         if (vote.approved) {
             completePhase(projectId);
-            if (project.currentPhase == 2) {
+            
+            if (project.currentPhase < 2) {
+                project.currentPhase += 1;
+            } else {
                 project.isActive = false;
             }
+        } else {
+            project.isActive = false;
         }
     }
 
@@ -437,14 +442,14 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
      */
     function _validateAndUpdateStateProof(
         bytes32 projectId,
-        uint8 phase,
+        uint8 currentPhase,
         bytes32 attestationUID,
         bytes32 imageHash
     ) private {
         require(attestationUID != bytes32(0), "Invalid attestation");
         require(imageHash != bytes32(0), "Invalid image hash");
 
-        bytes32 stateProofId = generateStateProofId(projectId, phase + 1);
+        bytes32 stateProofId = generateStateProofId(projectId, currentPhase);
         StateProof storage stateProof = stateProofs[stateProofId];
         
         // Ensure no existing state proof

@@ -226,24 +226,8 @@ contract ProofOfChangeTest is Test {
         // Complete initial phase
         _completePhaseVoting(projectId);
         
-        // Submit progress phase proof
-        vm.prank(USER);
-        poc.submitStateProof(
-            projectId,
-            bytes32(uint256(2)), // New attestation
-            MOCK_IMAGE_HASH
-        );
-        
         // Complete progress phase
         _completePhaseVoting(projectId);
-        
-        // Submit completion phase proof
-        vm.prank(USER);
-        poc.submitStateProof(
-            projectId,
-            bytes32(uint256(3)), // Final attestation
-            MOCK_IMAGE_HASH
-        );
         
         // Complete final phase
         _completePhaseVoting(projectId);

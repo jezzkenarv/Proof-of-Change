@@ -30,23 +30,22 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
     // These structs are not exposed in the interface because they're only used internally
     
     struct Project {
-        address proposer;
-        string location;           
-        uint256 requestedFunds;
-        uint256 regionId;
-        uint256 estimatedDuration; // Duration in seconds
-        uint256 startTime;         // When project begins (after initial phase approval)
+        address proposer;            // 20 bytes 
+        uint96 requestedFunds;       // 12 bytes, 96 bits can store up to ~79k ETH
+        uint64 estimatedDuration;   // Duration in seconds, 8 bytes can store up to 584 years in seconds
+        uint64 startTime;          // When project begins (after initial phase approval)
+        uint32 regionId;           // 4 bytes, 32 bits can store up to 4.2B regions
+        uint8 currentPhase;      // 0: Initial, 1: Progress, 2: Completion
         bool isActive;
-        uint8 currentPhase;       // 0: Initial, 1: Progress, 2: Completion
+        string location;
     }
   
     struct Vote {
-        uint128 daoFor;
-        uint128 daoAgainst;
-        uint128 subDaoFor;
-        uint128 subDaoAgainst;
-        uint256 startTime;
-        mapping(address => bool) hasVoted;
+        uint64 daoFor;
+        uint64 daoAgainst;
+        uint64 subDaoFor;
+        uint64 subDaoAgainst;
+        uint64 startTime;
         bool finalized;
         bool approved;
     }
@@ -54,7 +53,7 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
     struct StateProof {
         bytes32 attestationUID;
         bytes32 imageHash;
-        uint256 timestamp;
+        uint64 timestamp;
         Vote vote;
         bool completed;
     }
@@ -67,6 +66,8 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
 
     VotingConfig public votingConfig;
     address public admin;
+
+    mapping(bytes32 => bool) private _hasVotedOnProposal;
 
     /**
      * @notice Contract constructor
@@ -172,7 +173,7 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
         if (stateProof.vote.startTime != 0) revert VotingAlreadyStarted();
         if (project.currentPhase > 2) revert ProjectCompleted();
 
-        uint256 startTime = block.timestamp;
+        uint64 startTime = uint64(block.timestamp);
         stateProof.vote.startTime = startTime;
 
         emit VotingStarted(
@@ -197,7 +198,10 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
 
         if (vote.startTime == 0) revert VotingNotStarted();
         if (vote.finalized) revert VotingEnded();
-        if (vote.hasVoted[msg.sender]) revert AlreadyVoted();
+        
+        bytes32 voteId = generateVoteId(projectId, project.currentPhase, msg.sender);
+        if (_hasVotedOnProposal[voteId]) revert AlreadyVoted();
+        
         if (block.timestamp > vote.startTime + votingConfig.votingPeriod) revert VotingPeriodEnded();
 
         if (isDAO) {
@@ -208,7 +212,7 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
             else vote.subDaoAgainst++;
         }
 
-        vote.hasVoted[msg.sender] = true;
+        _hasVotedOnProposal[voteId] = true;
         emit VoteCast(projectId, project.currentPhase, msg.sender, isDAO, support);
     }
 
@@ -263,7 +267,7 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
         // Set project start time when initial phase (0) is approved
         // This marks the official beginning of the project timeline
         if (project.currentPhase == 0) {
-            project.startTime = block.timestamp;
+            project.startTime = uint64(block.timestamp);
         }
 
         emit PhaseCompleted(projectId, project.currentPhase, block.timestamp);
@@ -351,14 +355,6 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
     }
 
     /**
-     * @notice Check if a member has voted on a project's current phase
-     */
-    function hasVoted(bytes32 projectId, address member) external view returns (bool) {
-        bytes32 stateProofId = generateStateProofId(projectId, projects[projectId].currentPhase);
-        return stateProofs[stateProofId].vote.hasVoted[member];
-    }
-
-    /**
      * @notice Get the current contract balance
      */
     function getContractBalance() external view returns (uint256) {
@@ -415,9 +411,9 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
         Project storage project = projects[projectId];
         project.proposer = proposer;
         project.location = location;
-        project.requestedFunds = requestedFunds;
-        project.regionId = regionId;
-        project.estimatedDuration = estimatedDuration;
+        project.requestedFunds = uint96(requestedFunds);
+        project.regionId = uint32(regionId);
+        project.estimatedDuration = uint64(estimatedDuration);
         project.isActive = true;
         project.currentPhase = 0;
     }
@@ -434,7 +430,7 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
         StateProof storage stateProof = stateProofs[stateProofId];
         stateProof.attestationUID = attestationUID;
         stateProof.imageHash = imageHash;
-        stateProof.timestamp = block.timestamp;
+        stateProof.timestamp = uint64(block.timestamp);
     }
 
     /**
@@ -457,7 +453,7 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
         
         stateProof.attestationUID = attestationUID;
         stateProof.imageHash = imageHash;
-        stateProof.timestamp = block.timestamp;
+        stateProof.timestamp = uint64(block.timestamp);
     }
 
     // ============ Utility Functions ============
@@ -468,6 +464,13 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
     function generateStateProofId(bytes32 projectId, uint8 phase) public pure returns (bytes32) {
         if (phase > 2) revert InvalidPhase();
         return keccak256(abi.encodePacked(projectId, phase));
+    }
+
+    /**
+     * @notice Generate a vote ID from project ID, phase, and voter
+     */
+    function generateVoteId(bytes32 projectId, uint8 phase, address voter) public pure returns (bytes32) {
+        return keccak256(abi.encode(projectId, phase, voter));
     }
 
     // ============ Fallback Functions ============
@@ -492,5 +495,13 @@ contract ProofOfChange is IProofOfChange, ReentrancyGuard {
         if (newAdmin == address(0)) revert InvalidAddress();
         admin = newAdmin;
         emit AdminUpdated(newAdmin);
+    }
+
+    /**
+     * @notice Check if member has voted on current phase
+     */
+    function hasVotedOnProposal(bytes32 projectId, address member) external view returns (bool) {
+        bytes32 voteId = generateVoteId(projectId, projects[projectId].currentPhase, member);
+        return _hasVotedOnProposal[voteId];
     }
 }

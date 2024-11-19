@@ -222,7 +222,7 @@ interface IProofOfChange {
     /**
      * @notice Check if member has voted on current phase
      */
-    function hasVoted(bytes32 projectId, address member) external view returns (bool);
+    function hasVotedOnProposal(bytes32 projectId, address member) external view returns (bool);
 
     /**
      * @notice Update admin address

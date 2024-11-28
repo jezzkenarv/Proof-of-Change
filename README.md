@@ -1,6 +1,6 @@
-# ProofOfChange Protocol
+# Proof Of Change Protocol
 
-ProofOfChange is a protocol that enables on-chain verification of environmental state changes through satellite imagery and location proofs. It integrates with Astral Protocol's Logbook for geotagged log entries and location proof generation.
+Proof Of Change is a protocol that enables on-chain verification of environmental state changes through satellite imagery and location proofs. It integrates with Astral Protocol's Logbook for geotagged log entries and location proof generation.
 
 ## Overview
 
